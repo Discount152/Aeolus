@@ -1,68 +1,50 @@
-# Aeolus 1.0.2 — Second QA Repair Build Report
+# Aeolus 1.0.3 — Location, Cache, and Map Simplification
 
 ## Version
 
-- versionName: `1.0.2`
-- versionCode: `3`
-- Prior artifacts preserved: `dist/Aeolus-v1.0.0.apk`, `dist/Aeolus-v1.0.1.apk`
+- versionName: `1.0.3`
+- versionCode: `4`
+- Prior artifacts preserved: `dist/Aeolus-v1.0.0.apk` … `dist/Aeolus-v1.0.2.apk`
 
-## Root causes and repairs
+## Root causes
 
-### 1. Radar playback flashing (safety-critical)
-- **Cause:** `applyRadarFrame` removed the active RasterSource/RasterLayer before recreating the next frame, leaving a visible empty interval (basemap flash) while tiles loaded. Default raster fade amplified the flicker.
-- **Fix:** `RadarDoubleBuffer` two-slot active/staging architecture. Active frame stays opaque; staging loads next template; `commitSwap` atomically swaps opacity. `rasterFadeDuration = 0`.
+### 1. Stuck / undeletable saved locations
+- **Cause:** `selectLocation(persist=true)` auto-upserted every active location (map pins, device GPS, first-launch Amsterdam fallback) into Saved Locations. Fallback used `default:amsterdam` / derived meta ids that felt “built-in”. Delete-by-id could disagree with re-canonicalized ids; deleting the active item did not reassign active location, and re-select paths could re-introduce entries.
+- **Fix:** Separate **active location** (DataStore JSON) from **saved list**. Search / map pin / Current Location / fallback set active only. Explicit **SAVE** adds to saved. Migration normalizes ids and strips auto-persisted fallback Amsterdam. Remove matches by stable id and reassigns active location.
 
-### 2. Temperature map global/climate-like field
-- **Cause:** Sample grid used even latitude spacing (not Web Mercator), coarse cache keys, and missing values were filled with the last sample — producing latitudinal banding. Viewport padding/cache identity were weak; no legend.
-- **Fix:** `ViewportSampler` pads ~15%, builds mercator-even adaptive grids (12×8 regional), cache key includes geographic extent. Nullable grid interpolation; 256×256 ImageSource update. On-screen temperature legend with °C/°F.
+### 2. Offline cold-start cache miss
+- **Cause:** Cache write used volatile `location.id` (unrounded `device:lat,lon` from LocationService) while cold-start lookup used a different saved/selected id (rounded or Amsterdam fallback when active was not durably stored). Startup also preferred fallback before finishing location resolution, so hydrate ran against the wrong key. Exact-id `cache.read` on failure did not always align with the write key.
+- **Fix:** Single `LocationIdentity.stableId` / `cacheKey` (geo provider id or `coord:%.3f,%.3f` / `fallback:amsterdam`). Persist full active location. Write+hydrate always use `cacheKey`. `StartupCoordinator` cold-start order: prefs → active → permission/device/fallback → hydrate → refresh. Failed network retains hydrated state.
 
-### 3. Cloud map excessive whitening
-- **Cause:** Same viewport/stretch issues as temperature; linear alpha mapped low cloud % to visible white; missing values could fill as cloudy.
-- **Fix:** Shared viewport pipeline; nonlinear `cloudCoverAlphaFraction` (0–10% transparent → 80–100% strong); missing → transparent; cloud-cover legend 0–100%.
+### 3. Cache-key / location identity mismatch
+- **Yes — primary contributor.** Device/map/default id formats diverged across write vs restart. Unified stable identity removes that class of miss; `StartupCoordinatorTest` proves restore via the production key.
 
-### 4. Current Location failed on TEMP/CLOUD
-- **Cause:** Locate relied only on weather ViewModel location changes + a radar-coupled mental model; camera recenter was not map-owned and independent of overlay.
-- **Fix:** `locateOnMap()` animates camera + marker for any overlay, preserves layer selection, then triggers post-idle field resample for TEMP/CLOUD while still syncing weather location.
+### 4. Amsterdam-first flash
+- **Cause:** Bootstrap fell through to `DEFAULT_LOCATION` before permission/device resolution and could persist it.
+- **Fix:** Permission → device → fallback. While awaiting permission, UI stays loading without publishing Amsterdam. Fallback is ephemeral (not auto-saved).
 
-### 5. Offline cache blank after process death
-- **Cause:** Hydration path marked cache `stale=true` indiscriminately; process-death verification only round-tripped raw JSON, not the real `ForecastCache` File API. Location id mismatch risk remained.
-- **Fix:** Durable `ForecastCache(cacheDir, json)` atomic write; `hydrateFromCache(markStale=false)` by default; `findNearest` on GPS id jitter; failed refresh never clears cache. Real write→new-instance→read test.
+## Map simplification
 
-### 6. False OFFLINE flash while online
-- **Cause:** Today treated `bundle.stale` / cached source as offline, including during online refresh after hydrate.
-- **Fix:** Explicit `ConnectivityPresentation`: LIVE / REFRESHING_WITH_CACHE / OFFLINE_WITH_CACHE / ERROR_NO_CACHE. Refreshing shows `UPDATING…`, not OFFLINE.
+- Removed Temperature and Clouds map layers, legends, viewport sampling, and field raster pipeline.
+- MAP is radar-only (playback, scrubber, opacity, locate, map pin → active location).
 
-## Tests added/updated
+## Tests added
 
-- `RadarDoubleBufferTest`
-- `ViewportSamplerTest`
-- `FieldRasterInterpolatorTest` (nonlinear cloud alpha, nullable bilinear)
-- `ForecastCacheRoundTripTest` (real ForecastCache process-death simulation)
-- `ConnectivityPresentationTest`
+- `StartupCoordinatorTest` (full cold-start offline / OFFLINE_WITH_CACHE)
+- `SavedLocationMigrationTest`
+- Expanded `LocationIdentityTest` (stable cache keys)
 
-## Full test result
+## Results
 
-`.\gradlew.bat :app:testDebugUnitTest` → **56 tests, 0 failures, 0 errors**.
+- Unit tests: **52 passed**, 0 failed  
+- Lint: **0 errors** (warnings only)  
+- `assembleRelease`: **SUCCESS**
 
-## Lint result
+## Runtime
 
-`.\gradlew.bat lintDebug` → **PASS** (0 errors, 16 warnings — dependency/version/icon suggestions).
+No emulator/adb on Aeolus-PC this pass. Device QA still required for permission dialog UX and force-stop offline confirmation.
 
-## Release-build result
+## Artifact
 
-`.\gradlew.bat assembleRelease` → **SUCCESS** (signed).
-
-## Runtime map / process-death testing
-
-No emulator AVD / no adb device on Aeolus-PC this pass. Map double-buffer, viewport sampling, and connectivity semantics verified via unit tests + code review against the QA matrix. Device QA of `Aeolus-v1.0.2.apk` still required for photosensitive flash visual confirmation and airplane-mode force-stop.
-
-## Artifacts
-
-- `D:\Project Aeolus\dist\Aeolus-v1.0.2.apk`
-- SHA-256: `a13bbfcc82ea60f6786ea43cc4195df39aaf9e769185aa0d277825f1564b7dec`
-- `dist/SHA256.txt` updated
-- `dist/Aeolus-v1.0.0.apk` and `dist/Aeolus-v1.0.1.apk` preserved
-
-## Environment
-
-- JDK Temurin 21, Android SDK API 35, Gradle 8.11.1, AGP 8.7.3, Kotlin 2.0.21
+- `D:\Project Aeolus\dist\Aeolus-v1.0.3.apk`
+- SHA-256: `12e8929739ffd38e904dc98644fea197e6c76e361844f42405f7b74d77027bd3`

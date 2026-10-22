@@ -12,15 +12,20 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.TimeZone
 import kotlin.coroutines.resume
 
-class LocationService(private val context: Context) {
-    fun hasPermission(): Boolean {
+interface DeviceLocationSource {
+    fun hasPermission(): Boolean
+    suspend fun currentLocation(): GeoLocation?
+}
+
+class LocationService(private val context: Context) : DeviceLocationSource {
+    override fun hasPermission(): Boolean {
         val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
         val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
         return fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED
     }
 
     @SuppressLint("MissingPermission")
-    suspend fun currentLocation(): GeoLocation? {
+    override suspend fun currentLocation(): GeoLocation? {
         if (!hasPermission()) return null
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val providers = listOf(
@@ -34,14 +39,16 @@ class LocationService(private val context: Context) {
             }.getOrNull()
         }.maxByOrNull { it.time } ?: return null
 
-        return GeoLocation(
-            id = "device:${best.latitude},${best.longitude}",
-            name = "Current location",
-            latitude = best.latitude,
-            longitude = best.longitude,
-            timezone = TimeZone.getDefault().id,
-            country = null,
-            admin1 = null,
+        return LocationIdentity.withStableId(
+            GeoLocation(
+                id = LocationIdentity.coordKey(best.latitude, best.longitude),
+                name = "Current location",
+                latitude = best.latitude,
+                longitude = best.longitude,
+                timezone = TimeZone.getDefault().id,
+                country = null,
+                admin1 = null,
+            ),
         )
     }
 

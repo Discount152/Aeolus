@@ -1,7 +1,6 @@
 package com.discount152.aeolus.location
 
 import com.discount152.aeolus.domain.models.GeoLocation
-import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -14,32 +13,88 @@ object LocationIdentity {
     /** Distinct cities closer than this are still kept separate if names differ. */
     const val NEARBY_DISTINCT_GUARD_M = 8_000.0
 
-    fun canonicalSearchId(location: GeoLocation): String {
-        val providerId = location.id.trim()
-        if (providerId.isNotEmpty() &&
-            !providerId.startsWith("device:", ignoreCase = true) &&
-            !providerId.startsWith("map:", ignoreCase = true) &&
-            !providerId.startsWith("default:", ignoreCase = true)
-        ) {
-            return "geo:$providerId"
+    const val FALLBACK_ID = "fallback:amsterdam"
+
+    val FALLBACK_LOCATION = GeoLocation(
+        id = FALLBACK_ID,
+        name = "Amsterdam",
+        latitude = 52.37,
+        longitude = 4.89,
+        timezone = "Europe/Amsterdam",
+        country = "Netherlands",
+        admin1 = "North Holland",
+    )
+
+    /**
+     * Durable identity for cache keys, selected-location persistence, and dedupe.
+     * Rounded to ~100 m so GPS jitter does not mint a new key every launch.
+     */
+    fun stableId(location: GeoLocation): String {
+        if (isFallback(location)) return FALLBACK_ID
+        val raw = location.id.trim()
+        if (raw.startsWith("geo:", ignoreCase = true)) {
+            val provider = raw.removePrefix("geo:").removePrefix("GEO:")
+            if (provider.isNotEmpty() && !provider.startsWith("default:", ignoreCase = true)) {
+                return "geo:$provider"
+            }
         }
-        return derivedKey(location)
+        if (raw.isNotEmpty() &&
+            !raw.startsWith("device:", ignoreCase = true) &&
+            !raw.startsWith("map:", ignoreCase = true) &&
+            !raw.startsWith("default:", ignoreCase = true) &&
+            !raw.startsWith("fallback:", ignoreCase = true) &&
+            !raw.startsWith("meta:", ignoreCase = true) &&
+            !raw.startsWith("coord:", ignoreCase = true)
+        ) {
+            return "geo:$raw"
+        }
+        return coordKey(location.latitude, location.longitude)
     }
 
-    fun derivedKey(location: GeoLocation): String {
-        val name = normalizeName(location.name)
-        val country = normalizeName(location.country.orEmpty())
-        val admin = normalizeName(location.admin1.orEmpty())
-        val lat = "%.3f".format(location.latitude)
-        val lon = "%.3f".format(location.longitude)
-        return "meta:$name|$admin|$country|$lat|$lon"
+    fun coordKey(latitude: Double, longitude: Double): String =
+        "coord:${"%.3f".format(latitude)},${"%.3f".format(longitude)}"
+
+    /** Alias used for forecast cache file keys — always [stableId]. */
+    fun cacheKey(location: GeoLocation): String = stableId(location)
+
+    fun withStableId(location: GeoLocation): GeoLocation =
+        location.copy(id = stableId(location))
+
+    fun isFallback(location: GeoLocation): Boolean {
+        if (location.id.equals(FALLBACK_ID, ignoreCase = true) ||
+            location.id.equals("default:amsterdam", ignoreCase = true)
+        ) {
+            return true
+        }
+        return normalizeName(location.name) == "amsterdam" &&
+            distanceMeters(location.latitude, location.longitude, FALLBACK_LOCATION.latitude, FALLBACK_LOCATION.longitude) <=
+            GPS_MATCH_RADIUS_M &&
+            (
+                location.id.startsWith("default:", ignoreCase = true) ||
+                    location.id.startsWith("fallback:", ignoreCase = true) ||
+                    location.id.startsWith("meta:amsterdam", ignoreCase = true)
+                )
     }
+
+    fun isEphemeralActive(location: GeoLocation): Boolean {
+        val id = location.id
+        return isFallback(location) ||
+            id.startsWith("device:", ignoreCase = true) ||
+            id.startsWith("map:", ignoreCase = true) ||
+            id.startsWith("coord:", ignoreCase = true) ||
+            normalizeName(location.name) == "current location" ||
+            normalizeName(location.name) == "map pin"
+    }
+
+    fun canonicalSearchId(location: GeoLocation): String = stableId(location)
+
+    fun derivedKey(location: GeoLocation): String = coordKey(location.latitude, location.longitude)
 
     fun normalizeName(value: String): String =
         value.trim().lowercase().replace(Regex("\\s+"), " ")
 
     fun sameSearchResult(a: GeoLocation, b: GeoLocation): Boolean {
-        if (canonicalSearchId(a) == canonicalSearchId(b)) return true
+        if (stableId(a) == stableId(b)) return true
         val sameName = normalizeName(a.name) == normalizeName(b.name) &&
             normalizeName(a.country.orEmpty()) == normalizeName(b.country.orEmpty())
         if (!sameName) return false
@@ -56,12 +111,13 @@ object LocationIdentity {
             return distanceMeters(candidate.latitude, candidate.longitude, saved.latitude, saved.longitude) <=
                 NEARBY_DISTINCT_GUARD_M
         }
-        // GPS-only / Current location pin: tight radius, ignore volatile device: ids
         return distanceMeters(candidate.latitude, candidate.longitude, saved.latitude, saved.longitude) <=
             GPS_MATCH_RADIUS_M
     }
 
     fun findDuplicate(existing: List<GeoLocation>, incoming: GeoLocation, fromDevice: Boolean): GeoLocation? {
+        val incomingKey = stableId(incoming)
+        existing.firstOrNull { stableId(it) == incomingKey }?.let { return it }
         return existing.firstOrNull { saved ->
             if (fromDevice) matchesCurrentLocation(incoming, saved)
             else sameSearchResult(incoming, saved)
@@ -69,23 +125,28 @@ object LocationIdentity {
     }
 
     fun upsert(existing: List<GeoLocation>, incoming: GeoLocation, fromDevice: Boolean = false): List<GeoLocation> {
-        val match = findDuplicate(existing, incoming, fromDevice)
+        val normalized = withStableId(incoming).let {
+            if (fromDevice && normalizeName(it.name) == "current location") it
+            else it
+        }
+        val match = findDuplicate(existing, normalized, fromDevice)
         return if (match == null) {
-            val normalized = incoming.copy(id = if (fromDevice) matchDeviceId(incoming) else canonicalSearchId(incoming))
             existing + normalized
         } else {
             existing.map {
-                if (it.id == match.id) {
-                    // Keep stable id; refresh coords/name lightly
+                if (it.id == match.id || stableId(it) == stableId(match)) {
                     it.copy(
-                        name = if (fromDevice) it.name else incoming.name,
-                        latitude = if (fromDevice) incoming.latitude else it.latitude,
-                        longitude = if (fromDevice) incoming.longitude else it.longitude,
-                        timezone = incoming.timezone.ifBlank { it.timezone },
-                        country = incoming.country ?: it.country,
-                        admin1 = incoming.admin1 ?: it.admin1,
+                        id = stableId(match),
+                        name = if (fromDevice && normalizeName(it.name) != "current location") it.name else normalized.name,
+                        latitude = if (fromDevice) normalized.latitude else it.latitude,
+                        longitude = if (fromDevice) normalized.longitude else it.longitude,
+                        timezone = normalized.timezone.ifBlank { it.timezone },
+                        country = normalized.country ?: it.country,
+                        admin1 = normalized.admin1 ?: it.admin1,
                     )
-                } else it
+                } else {
+                    it
+                }
             }
         }
     }
@@ -95,16 +156,31 @@ object LocationIdentity {
         for (loc in existing) {
             val fromDevice = loc.id.startsWith("device:", ignoreCase = true) ||
                 normalizeName(loc.name) == "current location"
-            val match = findDuplicate(out, loc, fromDevice)
+            val normalized = withStableId(loc)
+            val match = findDuplicate(out, normalized, fromDevice)
             if (match == null) {
-                out += loc.copy(id = if (fromDevice) matchDeviceId(loc) else canonicalSearchId(loc))
+                out += normalized
             }
         }
         return out
     }
 
-    private fun matchDeviceId(location: GeoLocation): String =
-        "device:${"%.3f".format(location.latitude)},${"%.3f".format(location.longitude)}"
+    /**
+     * Upgrade migration: make every saved entry deletable; drop synthetic fallback-only Amsterdam;
+     * normalize map/device/meta ids to [stableId].
+     */
+    fun migrateSavedLocations(existing: List<GeoLocation>): List<GeoLocation> {
+        val normalized = existing.map { withStableId(it) }
+        val withoutAutoFallback = normalized.filterNot { loc ->
+            // Remove fallback Amsterdam that was auto-persisted — never user-saved explicitly
+            isFallback(loc) && (
+                loc.id.startsWith("default:", ignoreCase = true) ||
+                    loc.id.equals(FALLBACK_ID, ignoreCase = true) ||
+                    loc.id.startsWith("meta:amsterdam", ignoreCase = true)
+                )
+        }
+        return dedupe(withoutAutoFallback)
+    }
 
     fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val r = 6371000.0

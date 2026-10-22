@@ -13,7 +13,7 @@ Aeolus is a confidence-first Android weather application that combines determini
 
 - Android 15 (API 35)+
 - Application ID: `com.discount152.aeolus`
-- Version: 1.0.2 (versionCode 3)
+- Version: 1.0.3 (versionCode 4)
 
 ## Build
 
@@ -24,7 +24,7 @@ $env:ANDROID_HOME = "D:\Android\Sdk"
 
 Signed release APK (after local keystore setup):
 
-`dist/Aeolus-v1.0.2.apk` (v1.0.0 and v1.0.1 APKs retained alongside)
+`dist/Aeolus-v1.0.3.apk` (prior v1.0.0–v1.0.2 APKs retained alongside)
 
 ## Privacy
 

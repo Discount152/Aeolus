@@ -1,3 +1,4 @@
 Aeolus-v1.0.0.apk
 Aeolus-v1.0.1.apk
-Aeolus-v1.0.2.apk  a13bbfcc82ea60f6786ea43cc4195df39aaf9e769185aa0d277825f1564b7dec
+Aeolus-v1.0.2.apk
+Aeolus-v1.0.3.apk  12e8929739ffd38e904dc98644fea197e6c76e361844f42405f7b74d77027bd3

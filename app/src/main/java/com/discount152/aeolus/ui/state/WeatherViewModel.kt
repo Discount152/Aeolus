@@ -13,10 +13,12 @@ import com.discount152.aeolus.domain.units.UnitPreferences
 import com.discount152.aeolus.location.LocationIdentity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -36,15 +38,21 @@ data class WeatherUiState(
     val searchResults: List<GeoLocation> = emptyList(),
     val searchQuery: String = "",
     val connectivity: ConnectivityPresentation = ConnectivityPresentation.ERROR_NO_CACHE,
+    val locationIsSaved: Boolean = false,
+    val awaitingLocationPermission: Boolean = false,
 )
 
 class WeatherViewModel(
     application: Application,
     private val container: AppContainer,
 ) : AndroidViewModel(application) {
-    private val _meta = MutableStateFlow(
-        MetaState(),
+    private val startup = StartupCoordinator(
+        settings = container.settingsRepository,
+        locationService = container.locationService,
+        weatherRepository = container.weatherRepository,
     )
+
+    private val _meta = MutableStateFlow(MetaState())
     private data class MetaState(
         val loading: Boolean = true,
         val refreshing: Boolean = false,
@@ -55,18 +63,23 @@ class WeatherViewModel(
         val savedLocations: List<GeoLocation> = emptyList(),
         val searchResults: List<GeoLocation> = emptyList(),
         val searchQuery: String = "",
+        val awaitingLocationPermission: Boolean = false,
     )
+
+    private val _permissionRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val permissionRequests: SharedFlow<Unit> = _permissionRequests.asSharedFlow()
 
     val state: StateFlow<WeatherUiState> = combine(
         _meta,
         container.weatherRepository.weather,
     ) { meta, bundle ->
+        val loc = meta.location ?: bundle?.location
         WeatherUiState(
             loading = meta.loading,
             refreshing = meta.refreshing,
             error = meta.error,
             bundle = bundle,
-            location = meta.location ?: bundle?.location,
+            location = loc,
             units = meta.units,
             radarOpacity = meta.radarOpacity,
             savedLocations = meta.savedLocations,
@@ -78,6 +91,10 @@ class WeatherViewModel(
                 error = meta.error,
                 bundle = bundle,
             ),
+            locationIsSaved = loc != null && meta.savedLocations.any {
+                LocationIdentity.stableId(it) == LocationIdentity.stableId(loc)
+            },
+            awaitingLocationPermission = meta.awaitingLocationPermission,
         )
     }.stateIn(
         viewModelScope,
@@ -86,6 +103,7 @@ class WeatherViewModel(
     )
 
     private var refreshJob: Job? = null
+    private var permissionResolved = false
 
     init {
         viewModelScope.launch {
@@ -100,11 +118,11 @@ class WeatherViewModel(
         }
         viewModelScope.launch {
             container.settingsRepository.savedLocations.collect { saved ->
-                val deduped = LocationIdentity.dedupe(saved)
-                if (deduped.size != saved.size) {
-                    container.settingsRepository.setSavedLocations(deduped)
+                val migrated = LocationIdentity.migrateSavedLocations(saved)
+                if (migrated != saved) {
+                    container.settingsRepository.setSavedLocations(migrated)
                 }
-                _meta.update { it.copy(savedLocations = deduped) }
+                _meta.update { it.copy(savedLocations = migrated) }
             }
         }
         viewModelScope.launch { bootstrap() }
@@ -112,28 +130,50 @@ class WeatherViewModel(
     }
 
     private suspend fun bootstrap() {
-        val settings = container.settingsRepository
-        var saved = LocationIdentity.dedupe(settings.savedLocations.first())
-        if (saved != settings.savedLocations.first()) {
-            settings.setSavedLocations(saved)
-        }
-        val selectedId = settings.selectedLocationId.first()
-        val selected = saved.firstOrNull { it.id == selectedId } ?: saved.firstOrNull()
-        val location = selected
-            ?: container.locationService.currentLocation()?.let { device ->
-                LocationIdentity.findDuplicate(saved, device, fromDevice = true) ?: device
+        val permissionGranted = container.locationService.hasPermission()
+        val (location, needsPermission) = startup.resolveInitialLocation(
+            permissionGranted = permissionGranted,
+            allowPermissionPrompt = !permissionResolved,
+        )
+
+        if (needsPermission) {
+            _meta.update {
+                it.copy(
+                    loading = true,
+                    awaitingLocationPermission = true,
+                    // Do not publish Amsterdam to UI yet — wait for permission result
+                    location = null,
+                )
             }
-            ?: DEFAULT_LOCATION
-
-        _meta.update { it.copy(location = location) }
-
-        // Show disk cache immediately so offline restart works
-        val cached = container.weatherRepository.hydrateFromCache(location)
-        if (cached != null) {
-            _meta.update { it.copy(loading = false, error = null) }
+            _permissionRequests.tryEmit(Unit)
+            return
         }
 
-        selectLocation(location, persist = selected == null, forceNetwork = true)
+        applyActiveLocation(location, persistActive = true, saveToList = false, forceNetwork = true)
+    }
+
+    /** Called from UI after the system permission dialog resolves. */
+    fun onLocationPermissionResult(granted: Boolean) {
+        viewModelScope.launch {
+            permissionResolved = true
+            container.settingsRepository.setLocationPermissionNagDismissed(true)
+            _meta.update { it.copy(awaitingLocationPermission = false) }
+
+            if (granted) {
+                val device = container.locationService.currentLocation()
+                    ?.let { LocationIdentity.withStableId(it) }
+                if (device != null) {
+                    applyActiveLocation(device, persistActive = true, saveToList = false, forceNetwork = true)
+                    return@launch
+                }
+            }
+            applyActiveLocation(
+                LocationIdentity.FALLBACK_LOCATION,
+                persistActive = true,
+                saveToList = false,
+                forceNetwork = true,
+            )
+        }
     }
 
     fun startAutoRefresh() {
@@ -146,30 +186,68 @@ class WeatherViewModel(
         }
     }
 
-    fun selectLocation(location: GeoLocation, persist: Boolean = true, forceNetwork: Boolean = true) {
+    /**
+     * Set the active viewing location. Does NOT add to Saved Locations unless [saveToList].
+     */
+    fun selectLocation(
+        location: GeoLocation,
+        saveToList: Boolean = false,
+        forceNetwork: Boolean = true,
+    ) {
         viewModelScope.launch {
-            val fromDevice = location.id.startsWith("device:", ignoreCase = true) ||
-                LocationIdentity.normalizeName(location.name) == "current location"
-            val canonical = if (fromDevice) {
-                location
-            } else {
-                location.copy(id = LocationIdentity.canonicalSearchId(location))
-            }
-            _meta.update { it.copy(location = canonical, error = null) }
-
-            if (persist) {
-                val saved = container.settingsRepository.savedLocations.first()
-                val updated = LocationIdentity.upsert(saved, canonical, fromDevice = fromDevice)
-                container.settingsRepository.setSavedLocations(updated)
-                val selectedId = LocationIdentity.findDuplicate(updated, canonical, fromDevice)?.id
-                    ?: canonical.id
-                container.settingsRepository.setSelectedLocationId(selectedId)
-            }
-
-            // Prefer cache for this location before network
-            container.weatherRepository.hydrateFromCache(canonical)
-            loadWeather(force = forceNetwork)
+            applyActiveLocation(
+                location = location,
+                persistActive = true,
+                saveToList = saveToList,
+                forceNetwork = forceNetwork,
+            )
         }
+    }
+
+    fun saveCurrentLocation() {
+        viewModelScope.launch {
+            val loc = _meta.value.location ?: return@launch
+            // Explicit save: never use ephemeral fallback/device/map ids — stable deletable record
+            val toSave = if (LocationIdentity.isFallback(loc)) {
+                loc.copy(
+                    id = LocationIdentity.coordKey(loc.latitude, loc.longitude),
+                    name = "Amsterdam",
+                )
+            } else {
+                LocationIdentity.withStableId(loc)
+            }
+            val saved = container.settingsRepository.savedLocations.first()
+            val updated = LocationIdentity.upsert(saved, toSave, fromDevice = false)
+            container.settingsRepository.setSavedLocations(updated)
+        }
+    }
+
+    private suspend fun applyActiveLocation(
+        location: GeoLocation,
+        persistActive: Boolean,
+        saveToList: Boolean,
+        forceNetwork: Boolean,
+    ) {
+        val fromDevice = location.id.startsWith("device:", ignoreCase = true) ||
+            location.id.startsWith("coord:", ignoreCase = true) ||
+            LocationIdentity.normalizeName(location.name) == "current location"
+        val canonical = LocationIdentity.withStableId(location)
+        _meta.update { it.copy(location = canonical, error = null, awaitingLocationPermission = false) }
+
+        if (persistActive) {
+            container.settingsRepository.setActiveLocation(canonical)
+        }
+        if (saveToList) {
+            val saved = container.settingsRepository.savedLocations.first()
+            val updated = LocationIdentity.upsert(saved, canonical, fromDevice = fromDevice)
+            container.settingsRepository.setSavedLocations(updated)
+        }
+
+        val cached = container.weatherRepository.hydrateFromCache(canonical)
+        if (cached != null) {
+            _meta.update { it.copy(loading = false) }
+        }
+        loadWeather(force = forceNetwork)
     }
 
     fun refresh(silent: Boolean = false) {
@@ -199,16 +277,44 @@ class WeatherViewModel(
 
     fun removeSavedLocation(id: String) {
         viewModelScope.launch {
-            val saved = container.settingsRepository.savedLocations.first().filterNot { it.id == id }
-            container.settingsRepository.setSavedLocations(saved)
+            val saved = container.settingsRepository.savedLocations.first()
+            val target = saved.firstOrNull {
+                it.id == id || LocationIdentity.stableId(it) == id
+            }
+            val remaining = saved.filterNot {
+                it.id == id ||
+                    (target != null && LocationIdentity.stableId(it) == LocationIdentity.stableId(target))
+            }
+            container.settingsRepository.setSavedLocations(remaining)
+
+            val active = _meta.value.location
+            if (active != null && target != null &&
+                LocationIdentity.stableId(active) == LocationIdentity.stableId(target)
+            ) {
+                val next = when {
+                    container.locationService.hasPermission() ->
+                        container.locationService.currentLocation()?.let { LocationIdentity.withStableId(it) }
+                    else -> null
+                } ?: remaining.firstOrNull()?.let { LocationIdentity.withStableId(it) }
+                    ?: LocationIdentity.FALLBACK_LOCATION
+                applyActiveLocation(next, persistActive = true, saveToList = false, forceNetwork = true)
+            }
         }
     }
 
     fun useDeviceLocation() {
         viewModelScope.launch {
+            if (!container.locationService.hasPermission()) {
+                _meta.update { it.copy(awaitingLocationPermission = true) }
+                _permissionRequests.tryEmit(Unit)
+                return@launch
+            }
             val loc = container.locationService.currentLocation()
-            if (loc != null) selectLocation(loc)
-            else _meta.update { it.copy(error = "Location unavailable. Search or pick on the map.") }
+            if (loc != null) {
+                applyActiveLocation(loc, persistActive = true, saveToList = false, forceNetwork = true)
+            } else {
+                _meta.update { it.copy(error = "Location unavailable. Search or pick on the map.") }
+            }
         }
     }
 
@@ -216,12 +322,11 @@ class WeatherViewModel(
         val location = _meta.value.location ?: return
         _meta.update {
             it.copy(
-                loading = it.let { m -> container.weatherRepository.weather.value == null && !silent && m.loading },
+                loading = container.weatherRepository.weather.value == null && !silent && it.loading,
                 refreshing = silent || container.weatherRepository.weather.value != null,
                 error = null,
             )
         }
-        // If we already showed cache, don't flash blank loading
         if (container.weatherRepository.weather.value != null) {
             _meta.update { it.copy(loading = false, refreshing = true) }
         }
@@ -231,7 +336,7 @@ class WeatherViewModel(
         }.onSuccess {
             _meta.update { it.copy(loading = false, refreshing = false, error = null) }
         }.onFailure {
-            val cached = container.weatherRepository.cachedOrNull(location.id)
+            val cached = container.weatherRepository.cachedFor(location)
                 ?: container.weatherRepository.weather.value
             if (cached != null) {
                 container.weatherRepository.hydrateFromCache(location, markStale = true)
@@ -251,15 +356,8 @@ class WeatherViewModel(
     }
 
     companion object {
-        val DEFAULT_LOCATION = GeoLocation(
-            id = "default:amsterdam",
-            name = "Amsterdam",
-            latitude = 52.37,
-            longitude = 4.89,
-            timezone = "Europe/Amsterdam",
-            country = "Netherlands",
-            admin1 = "North Holland",
-        )
+        @Deprecated("Use LocationIdentity.FALLBACK_LOCATION", ReplaceWith("LocationIdentity.FALLBACK_LOCATION"))
+        val DEFAULT_LOCATION = LocationIdentity.FALLBACK_LOCATION
 
         fun factory(container: AppContainer): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {

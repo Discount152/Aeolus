@@ -113,7 +113,7 @@ fun TodayScreen(
                 state.searchResults.take(6).forEach { result ->
                     TextButton(
                         onClick = {
-                            vm.selectLocation(result)
+                            vm.selectLocation(result, saveToList = false)
                             vm.clearSearch()
                         },
                     ) {
@@ -168,12 +168,29 @@ fun TodayScreen(
                         -> Unit
                     }
 
-                    Text(
-                        text = listOfNotNull(location.name, location.admin1, location.country).joinToString(" · "),
-                        color = TerminalText,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = listOfNotNull(location.name, location.admin1, location.country).joinToString(" · "),
+                            color = TerminalText,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (!state.locationIsSaved) {
+                            TextButton(onClick = { vm.saveCurrentLocation() }) {
+                                Text(
+                                    "SAVE",
+                                    color = PhosphorGreen,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                )
+                            }
+                        }
+                    }
                     Text(
                         text = "LOCAL $localNow · ${location.timezone}",
                         color = TerminalMuted,

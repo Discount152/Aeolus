@@ -24,9 +24,11 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.discount152.aeolus.ui.forecast.ForecastScreen
+import com.discount152.aeolus.ui.location.LocationPermissionEffect
 import com.discount152.aeolus.ui.map.MapScreen
 import com.discount152.aeolus.ui.models.ModelsScreen
 import com.discount152.aeolus.ui.settings.SettingsScreen
+import com.discount152.aeolus.ui.state.rememberWeatherViewModel
 import com.discount152.aeolus.ui.theme.PhosphorGreen
 import com.discount152.aeolus.ui.theme.TerminalBackground
 import com.discount152.aeolus.ui.theme.TerminalBorder
@@ -60,6 +62,8 @@ fun AeolusNavHost() {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val showBottomBar = currentDestination?.route != AeolusRoutes.SETTINGS
+    val weatherVm = rememberWeatherViewModel()
+    LocationPermissionEffect(weatherVm)
 
     Scaffold(
         containerColor = TerminalBackground,

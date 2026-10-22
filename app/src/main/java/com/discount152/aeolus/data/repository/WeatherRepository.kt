@@ -65,13 +65,24 @@ class WeatherRepository(
 
     fun cachedOrNull(locationId: String): WeatherBundle? = cache.read(locationId)
 
+    fun cachedFor(location: GeoLocation): WeatherBundle? {
+        val key = LocationIdentity.cacheKey(location)
+        return cache.read(key) ?: cache.read(location.id) ?: cache.findNearest(location)
+    }
+
     /**
      * Load disk cache into shared state without network.
+     * Always looks up by [LocationIdentity.cacheKey] first (same key used on write).
      * @param markStale true only when refresh failed or offline — not while a live refresh is pending.
      */
     fun hydrateFromCache(location: GeoLocation, markStale: Boolean = false): WeatherBundle? {
-        val raw = cache.read(location.id) ?: cache.findNearest(location)
-        val cached = raw?.copy(fromCache = true, stale = markStale)
+        val key = LocationIdentity.cacheKey(location)
+        val raw = cache.read(key) ?: cache.read(location.id) ?: cache.findNearest(location)
+        val cached = raw?.copy(
+            location = LocationIdentity.withStableId(raw.location),
+            fromCache = true,
+            stale = markStale,
+        )
         if (cached != null) {
             _weather.value = cached
         }
@@ -80,8 +91,10 @@ class WeatherRepository(
 
     suspend fun getWeather(location: GeoLocation, forceRefresh: Boolean = false): WeatherBundle =
         mutex.withLock {
+            val stable = LocationIdentity.withStableId(location)
+            val key = LocationIdentity.cacheKey(stable)
             if (!forceRefresh) {
-                cache.read(location.id)?.let { cached ->
+                (cache.read(key) ?: cache.findNearest(stable))?.let { cached ->
                     val age = System.currentTimeMillis() - cached.fetchedAtEpochMs
                     if (age < 30 * 60_000L) {
                         val tagged = cached.copy(fromCache = true, stale = false)
@@ -91,17 +104,20 @@ class WeatherRepository(
                 }
             }
             return try {
-                val fresh = fetchLive(location)
-                cache.write(location.id, fresh)
-                snapshots.record(location.id, fresh)
+                val fresh = fetchLive(stable).copy(location = stable)
+                cache.write(key, fresh)
+                snapshots.record(key, fresh)
                 _weather.value = fresh
                 fresh
             } catch (e: Exception) {
-                val cached = cache.read(location.id)?.copy(fromCache = true, stale = true)
+                val cached = (cache.read(key) ?: cache.findNearest(stable))
+                    ?.copy(fromCache = true, stale = true)
                 if (cached != null) {
                     // Never replace valid cache with empty/error state
                     _weather.value = cached
                     cached
+                } else if (_weather.value != null) {
+                    _weather.value!!.copy(fromCache = true, stale = true)
                 } else {
                     throw e
                 }

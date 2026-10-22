@@ -114,18 +114,21 @@ fun SettingsScreen(
                 }
                 state.savedLocations.forEach { loc ->
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { vm.selectLocation(loc) }, modifier = Modifier.weight(1f)) {
+                        TextButton(
+                            onClick = { vm.selectLocation(loc, saveToList = false) },
+                            modifier = Modifier.weight(1f),
+                        ) {
                             Text(loc.name, color = TerminalText, fontFamily = FontFamily.Monospace)
                         }
                         TextButton(onClick = { vm.removeSavedLocation(loc.id) }) {
-                            Text("REMOVE", color = TerminalMuted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                            Text("REMOVE", color = PhosphorGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
                         }
                     }
                 }
             }
             Section("ABOUT") {
                 Text(
-                    "Aeolus 1.0.0 is a confidence-first Android weather app. " +
+                    "Aeolus 1.0.3 is a confidence-first Android weather app. " +
                         "It combines deterministic and ensemble forecasts to show what weather is expected " +
                         "and how strongly available models agree.",
                     color = TerminalText,

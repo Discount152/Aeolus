@@ -21,22 +21,23 @@ class LocationIdentityTest {
         val once = LocationIdentity.upsert(emptyList(), a)
         val twice = LocationIdentity.upsert(once, b)
         assertThat(twice).hasSize(1)
-        assertThat(twice.first().id).isEqualTo(LocationIdentity.canonicalSearchId(a))
+        assertThat(twice.first().id).isEqualTo(LocationIdentity.stableId(a))
     }
 
     @Test
     fun sameSearchResult_caseAndSpacing_stillDeduped() {
         val a = loc("55", "Amsterdam", 52.37, 4.89)
         val b = loc("55", "  amsterdam ", 52.3701, 4.8901)
-        val out = LocationIdentity.upsert(listOf(a.copy(id = LocationIdentity.canonicalSearchId(a))), b)
+        val out = LocationIdentity.upsert(listOf(LocationIdentity.withStableId(a)), b)
         assertThat(out).hasSize(1)
     }
 
     @Test
-    fun currentLocation_smallGpsJitter_notDuplicated() {
-        val saved = loc("geo:1", "Amsterdam", 52.3700, 4.8900)
-        val device = loc("device:52.371,4.891", "Current location", 52.3710, 4.8910)
-        val out = LocationIdentity.upsert(listOf(saved), device, fromDevice = true)
+    fun currentLocation_smallGpsJitter_sameCacheKey() {
+        val a = loc("device:1", "Current location", 52.3700, 4.8900)
+        val b = loc("device:2", "Current location", 52.3704, 4.8904)
+        assertThat(LocationIdentity.cacheKey(a)).isEqualTo(LocationIdentity.cacheKey(b))
+        val out = LocationIdentity.upsert(listOf(LocationIdentity.withStableId(a)), b, fromDevice = true)
         assertThat(out).hasSize(1)
     }
 
@@ -45,7 +46,7 @@ class LocationIdentityTest {
         val amsterdam = loc("1", "Amsterdam", 52.37, 4.89)
         val haarlem = loc("2", "Haarlem", 52.38, 4.64, admin = "North Holland")
         val out = LocationIdentity.upsert(
-            listOf(amsterdam.copy(id = LocationIdentity.canonicalSearchId(amsterdam))),
+            listOf(LocationIdentity.withStableId(amsterdam)),
             haarlem,
         )
         assertThat(out).hasSize(2)
@@ -58,5 +59,11 @@ class LocationIdentityTest {
         val c = loc("device:52.3705,4.8905", "Current location", 52.3705, 4.8905)
         val out = LocationIdentity.dedupe(listOf(a, b, c))
         assertThat(out.size).isAtMost(2)
+    }
+
+    @Test
+    fun fallback_hasStableId() {
+        assertThat(LocationIdentity.FALLBACK_LOCATION.id).isEqualTo(LocationIdentity.FALLBACK_ID)
+        assertThat(LocationIdentity.isFallback(LocationIdentity.FALLBACK_LOCATION)).isTrue()
     }
 }

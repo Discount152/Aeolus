@@ -6,35 +6,24 @@ Updated: 2026-10-22
 
 | Item | Value |
 |------|-------|
-| versionName | `1.0.2` |
-| versionCode | `3` |
-| Branch | `cursor/aeolus-1.0.2-qa-repair-36b5` |
-| APK | `dist/Aeolus-v1.0.2.apk` |
-| Prior APKs preserved | `dist/Aeolus-v1.0.0.apk`, `dist/Aeolus-v1.0.1.apk` ✓ |
+| versionName | `1.0.3` |
+| versionCode | `4` |
+| Branch | `cursor/aeolus-1.0.3-qa-repair-36b5` |
+| APK | `dist/Aeolus-v1.0.3.apk` |
+| Prior APKs | v1.0.0–v1.0.2 preserved ✓ |
 
-## 1.0.2 second QA repair
+## 1.0.3 changes
 
-| Fix | Status |
-|-----|--------|
-| Radar double-buffer (no flash) | Fixed (`RadarDoubleBuffer`, fade 0) |
-| Temp viewport + legend | Fixed (`ViewportSampler` + legends) |
-| Cloud nonlinear alpha + legend | Fixed |
-| Overlay-independent locate | Fixed (`locateOnMap`) |
-| Process-death durable cache | Fixed (`ForecastCache` File API + test) |
-| LIVE/REFRESHING/OFFLINE states | Fixed (`ConnectivityPresentation`) |
-
-## 1.0.1 regressions (must stay fixed)
-
-| Fix | Status |
-|-----|--------|
-| ECMWF ensemble | Preserved |
-| Location dedupe | Preserved |
-| Cross-tab refresh | Preserved |
-| Units | Preserved |
-| Radar `/256/` maxZoom 7 | Preserved |
+| Item | Status |
+|------|--------|
+| Radar-only map (TEMP/CLOUD removed) | Done |
+| Permission → device → fallback startup | Done |
+| Active vs saved locations | Done |
+| All saved deletable + migration | Done |
+| Stable cacheKey + cold-start coordinator | Done |
 
 ## QA
 
-- Unit tests: **56 passed**
+- Unit tests: **52 passed**
 - Lint: **0 errors**, 16 warnings
 - assembleRelease: **SUCCESS**

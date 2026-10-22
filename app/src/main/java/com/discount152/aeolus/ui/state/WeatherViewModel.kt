@@ -35,6 +35,7 @@ data class WeatherUiState(
     val savedLocations: List<GeoLocation> = emptyList(),
     val searchResults: List<GeoLocation> = emptyList(),
     val searchQuery: String = "",
+    val connectivity: ConnectivityPresentation = ConnectivityPresentation.ERROR_NO_CACHE,
 )
 
 class WeatherViewModel(
@@ -71,6 +72,12 @@ class WeatherViewModel(
             savedLocations = meta.savedLocations,
             searchResults = meta.searchResults,
             searchQuery = meta.searchQuery,
+            connectivity = computeConnectivityPresentation(
+                loading = meta.loading,
+                refreshing = meta.refreshing,
+                error = meta.error,
+                bundle = bundle,
+            ),
         )
     }.stateIn(
         viewModelScope,
@@ -227,7 +234,7 @@ class WeatherViewModel(
             val cached = container.weatherRepository.cachedOrNull(location.id)
                 ?: container.weatherRepository.weather.value
             if (cached != null) {
-                container.weatherRepository.hydrateFromCache(location)
+                container.weatherRepository.hydrateFromCache(location, markStale = true)
             }
             _meta.update {
                 it.copy(

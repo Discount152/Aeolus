@@ -65,10 +65,13 @@ class WeatherRepository(
 
     fun cachedOrNull(locationId: String): WeatherBundle? = cache.read(locationId)
 
-    /** Load disk cache into shared state without network. */
-    fun hydrateFromCache(location: GeoLocation): WeatherBundle? {
-        val cached = cache.read(location.id)?.copy(fromCache = true, stale = true)
-            ?: cache.findNearest(location)?.copy(fromCache = true, stale = true)
+    /**
+     * Load disk cache into shared state without network.
+     * @param markStale true only when refresh failed or offline — not while a live refresh is pending.
+     */
+    fun hydrateFromCache(location: GeoLocation, markStale: Boolean = false): WeatherBundle? {
+        val raw = cache.read(location.id) ?: cache.findNearest(location)
+        val cached = raw?.copy(fromCache = true, stale = markStale)
         if (cached != null) {
             _weather.value = cached
         }

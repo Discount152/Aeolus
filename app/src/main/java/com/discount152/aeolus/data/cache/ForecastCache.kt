@@ -1,6 +1,7 @@
 package com.discount152.aeolus.data.cache
 
 import android.content.Context
+import android.util.Log
 import com.discount152.aeolus.domain.models.WeatherBundle
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -8,17 +9,27 @@ import kotlinx.serialization.json.Json
 import java.io.File
 
 class ForecastCache(
-    context: Context,
+    private val cacheDir: File,
     private val json: Json,
 ) {
-    private val cacheDir: File =
-        File(context.filesDir, "cache/forecasts").also { it.mkdirs() }
+    constructor(context: Context, json: Json) : this(
+        File(context.filesDir, "cache/forecasts"),
+        json,
+    ) {
+        cacheDir.mkdirs()
+    }
+
+    init {
+        cacheDir.mkdirs()
+    }
 
     fun read(locationId: String): WeatherBundle? {
         val file = fileFor(locationId)
         if (!file.isFile) return null
         return runCatching {
             json.decodeFromString<WeatherBundle>(file.readText())
+        }.onFailure { e ->
+            Log.e(TAG, "Failed to decode forecast cache for $locationId", e)
         }.getOrNull()
     }
 
@@ -30,6 +41,8 @@ class ForecastCache(
         for (file in files) {
             val bundle = runCatching {
                 json.decodeFromString<WeatherBundle>(file.readText())
+            }.onFailure { e ->
+                Log.e(TAG, "Failed to decode forecast cache file ${file.name}", e)
             }.getOrNull() ?: continue
             val d = com.discount152.aeolus.location.LocationIdentity.distanceMeters(
                 location.latitude,
@@ -74,5 +87,9 @@ class ForecastCache(
     private fun fileFor(locationId: String): File {
         val safeId = locationId.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         return File(cacheDir, "$safeId.json")
+    }
+
+    private companion object {
+        const val TAG = "ForecastCache"
     }
 }

@@ -46,6 +46,20 @@ import kotlin.math.roundToInt
 private val PanelShape = RoundedCornerShape(12.dp)
 
 @Composable
+fun UpdatingBanner(modifier: Modifier = Modifier) {
+    Text(
+        text = "UPDATING…",
+        color = TerminalMuted,
+        fontSize = 11.sp,
+        fontFamily = FontFamily.Monospace,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .semantics { contentDescription = "Updating forecast" },
+    )
+}
+
+@Composable
 fun StaleBanner(lastUpdatedEpochMs: Long, offline: Boolean, modifier: Modifier = Modifier) {
     val ageMs = (System.currentTimeMillis() - lastUpdatedEpochMs).coerceAtLeast(0)
     val hours = ageMs / 3_600_000

@@ -42,6 +42,8 @@ import com.discount152.aeolus.ui.components.ErrorRetry
 import com.discount152.aeolus.ui.components.HourlyStrip
 import com.discount152.aeolus.ui.components.MetricTile
 import com.discount152.aeolus.ui.components.StaleBanner
+import com.discount152.aeolus.ui.components.UpdatingBanner
+import com.discount152.aeolus.ui.state.ConnectivityPresentation
 import com.discount152.aeolus.ui.components.formatDistance
 import com.discount152.aeolus.ui.components.formatPrecip
 import com.discount152.aeolus.ui.components.formatTemp
@@ -138,7 +140,9 @@ fun TodayScreen(
                 }
             }
 
-            bundle == null && state.error != null -> {
+            state.connectivity == ConnectivityPresentation.ERROR_NO_CACHE &&
+                bundle == null &&
+                state.error != null -> {
                 ErrorRetry(message = state.error!!, onRetry = { vm.refresh() })
             }
 
@@ -149,8 +153,19 @@ fun TodayScreen(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    if (bundle.stale || (bundle.fromCache && state.error != null)) {
-                        StaleBanner(lastUpdatedEpochMs = bundle.fetchedAtEpochMs, offline = bundle.stale)
+                    when (state.connectivity) {
+                        ConnectivityPresentation.OFFLINE_WITH_CACHE -> {
+                            StaleBanner(
+                                lastUpdatedEpochMs = bundle.fetchedAtEpochMs,
+                                offline = true,
+                            )
+                        }
+                        ConnectivityPresentation.REFRESHING_WITH_CACHE -> {
+                            UpdatingBanner()
+                        }
+                        ConnectivityPresentation.LIVE,
+                        ConnectivityPresentation.ERROR_NO_CACHE,
+                        -> Unit
                     }
 
                     Text(

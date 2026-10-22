@@ -39,14 +39,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.discount152.aeolus.domain.models.GeoLocation
+import com.discount152.aeolus.map.FieldRasterInterpolator
 import com.discount152.aeolus.map.MapOverlayController
 import com.discount152.aeolus.map.RadarState
+import com.discount152.aeolus.map.RadarTiles
 import com.discount152.aeolus.map.SamplePoint
 import com.discount152.aeolus.map.WeatherLayer
 import com.discount152.aeolus.ui.state.WeatherViewModel
 import com.discount152.aeolus.ui.state.aeolusContainer
+import com.discount152.aeolus.ui.state.rememberWeatherViewModel
 import com.discount152.aeolus.ui.theme.PhosphorGreen
 import com.discount152.aeolus.ui.theme.TerminalBackground
 import com.discount152.aeolus.ui.theme.TerminalElevated
@@ -57,12 +59,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngQuad
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.android.style.sources.ImageSource
 import org.maplibre.android.style.sources.RasterSource
 import org.maplibre.android.style.sources.TileSet
 import org.maplibre.geojson.Feature
@@ -75,8 +79,8 @@ import java.time.format.DateTimeFormatter
 private const val STYLE_URL = "https://tiles.openfreemap.org/styles/dark"
 private const val RADAR_SOURCE = "aeolus-radar"
 private const val RADAR_LAYER = "aeolus-radar-layer"
-private const val SAMPLE_SOURCE = "aeolus-samples"
-private const val SAMPLE_LAYER = "aeolus-samples-layer"
+private const val FIELD_SOURCE = "aeolus-field"
+private const val FIELD_LAYER = "aeolus-field-layer"
 private const val MARKER_SOURCE = "aeolus-marker"
 private const val MARKER_LAYER = "aeolus-marker-layer"
 
@@ -84,7 +88,7 @@ private const val MARKER_LAYER = "aeolus-marker-layer"
 fun MapScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val container = context.aeolusContainer()
-    val vm: WeatherViewModel = viewModel(factory = WeatherViewModel.factory(container))
+    val vm: WeatherViewModel = rememberWeatherViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val overlay = remember {
@@ -99,6 +103,9 @@ fun MapScreen(modifier: Modifier = Modifier) {
     var playing by remember { mutableStateOf(false) }
     var overlayOpacity by remember { mutableFloatStateOf(state.radarOpacity) }
     var samples by remember { mutableStateOf<List<SamplePoint>>(emptyList()) }
+    var sampleBounds by remember {
+        mutableStateOf<FieldRasterInterpolator.Bounds?>(null)
+    }
     var sampleError by remember { mutableStateOf<String?>(null) }
     var idleJob by remember { mutableStateOf<Job?>(null) }
 
@@ -123,10 +130,11 @@ fun MapScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    LaunchedEffect(samples, layer, overlayOpacity, mapReady) {
+    LaunchedEffect(samples, sampleBounds, layer, overlayOpacity, mapReady) {
         if (!mapReady || layer == WeatherLayer.RADAR) return@LaunchedEffect
+        val bounds = sampleBounds ?: return@LaunchedEffect
         mapView?.getMapAsync { map ->
-            map.style?.let { applySamples(it, samples, layer, overlay, overlayOpacity) }
+            map.style?.let { applyFieldRaster(it, samples, bounds, layer, overlayOpacity) }
         }
     }
 
@@ -156,17 +164,25 @@ fun MapScreen(modifier: Modifier = Modifier) {
             if (active == WeatherLayer.RADAR) return@launch
             runCatching {
                 val b = map.projection.visibleRegion.latLngBounds
-                samples = overlay.sampleField(
-                    active,
+                val bounds = FieldRasterInterpolator.Bounds(
                     latSouth = b.latitudeSouth,
                     latNorth = b.latitudeNorth,
                     lonWest = b.longitudeWest,
                     lonEast = b.longitudeEast,
                 )
+                samples = overlay.sampleField(
+                    active,
+                    latSouth = bounds.latSouth,
+                    latNorth = bounds.latNorth,
+                    lonWest = bounds.lonWest,
+                    lonEast = bounds.lonEast,
+                )
+                sampleBounds = bounds
                 sampleError = null
             }.onFailure {
                 sampleError = "${active.name} OVERLAY UNAVAILABLE"
                 samples = emptyList()
+                sampleBounds = null
             }
         }
     }
@@ -181,7 +197,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
                     mv.onResume()
                     mv.getMapAsync { map ->
                         map.setStyle(Style.Builder().fromUri(STYLE_URL)) { style ->
-                            ensureSources(style)
+                            ensureMarker(style)
                             mapReady = true
                             state.location?.let { setMarker(style, it.latitude, it.longitude) }
                             map.addOnMapClickListener { latLng ->
@@ -220,8 +236,11 @@ fun MapScreen(modifier: Modifier = Modifier) {
                             layer = option
                             playing = false
                             mapView?.getMapAsync { map ->
+                                map.style?.let { style ->
+                                    clearRadar(style)
+                                    clearField(style)
+                                }
                                 if (option == WeatherLayer.RADAR) {
-                                    map.style?.let { clearRadar(it) }
                                     scope.launch { radar = overlay.loadRadar() }
                                 } else {
                                     sampleVisible(map, option)
@@ -275,7 +294,12 @@ fun MapScreen(modifier: Modifier = Modifier) {
                             valueRange = 0f..radar.frames.lastIndex.coerceAtLeast(0).toFloat(),
                             colors = SliderDefaults.colors(thumbColor = PhosphorGreen, activeTrackColor = PhosphorGreen),
                         )
-                        Text("Radar opacity", color = TerminalMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        Text(
+                            "Radar opacity · source z≤${RadarTiles.SOURCE_MAX_ZOOM} (overscales beyond)",
+                            color = TerminalMuted,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                        )
                         Slider(
                             value = overlayOpacity,
                             onValueChange = {
@@ -287,7 +311,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
                         Text("Radar © RainViewer", color = TerminalMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                     }
                 }
-                WeatherLayer.TEMPERATURE, WeatherLayer.CLOUDS -> {
+                WeatherLayer.TEMPERATURE -> {
                     sampleError?.let {
                         Text(
                             it,
@@ -297,11 +321,28 @@ fun MapScreen(modifier: Modifier = Modifier) {
                         )
                     }
                     Text(
-                        if (layer == WeatherLayer.TEMPERATURE) {
-                            "Temp legend: cool → warm · Open-Meteo samples"
-                        } else {
-                            "Cloud cover % · Open-Meteo samples"
-                        },
+                        "Temp field −15→30°C · Open-Meteo samples (interpolated)",
+                        color = TerminalMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    Slider(
+                        value = overlayOpacity,
+                        onValueChange = { overlayOpacity = it },
+                        colors = SliderDefaults.colors(thumbColor = PhosphorGreen, activeTrackColor = PhosphorGreen),
+                    )
+                }
+                WeatherLayer.CLOUDS -> {
+                    sampleError?.let {
+                        Text(
+                            it,
+                            color = TerminalText,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.background(TerminalElevated, RoundedCornerShape(8.dp)).padding(8.dp),
+                        )
+                    }
+                    Text(
+                        "Cloud cover field 0→100% · Open-Meteo samples (interpolated)",
                         color = TerminalMuted,
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace,
@@ -329,18 +370,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
     }
 }
 
-private fun ensureSources(style: Style) {
-    if (style.getSource(SAMPLE_SOURCE) == null) {
-        style.addSource(GeoJsonSource(SAMPLE_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
-        style.addLayer(
-            CircleLayer(SAMPLE_LAYER, SAMPLE_SOURCE).withProperties(
-                PropertyFactory.circleRadius(28f),
-                PropertyFactory.circleBlur(0.8f),
-                PropertyFactory.circleOpacity(0.55f),
-                PropertyFactory.circleColor(AndroidColor.GRAY),
-            ),
-        )
-    }
+private fun ensureMarker(style: Style) {
     if (style.getSource(MARKER_SOURCE) == null) {
         style.addSource(GeoJsonSource(MARKER_SOURCE, FeatureCollection.fromFeatures(emptyArray())))
         style.addLayer(
@@ -359,56 +389,67 @@ private fun clearRadar(style: Style) {
     style.getSource(RADAR_SOURCE)?.let { style.removeSource(it) }
 }
 
+private fun clearField(style: Style) {
+    style.getLayer(FIELD_LAYER)?.let { style.removeLayer(it) }
+    style.getSource(FIELD_SOURCE)?.let { style.removeSource(it) }
+}
+
 private fun applyRadarFrame(style: Style, radar: RadarState, index: Int, opacity: Float) {
     if (radar.host.isNullOrBlank() || radar.frames.isEmpty()) return
     val frame = radar.frames[index.coerceIn(0, radar.frames.lastIndex)]
-    val template = "${radar.host!!.trimEnd('/')}/${frame.path.trim('/')}/{z}/{x}/{y}/2/1_1.png"
+    val template = RadarTiles.tileTemplate(radar.host!!, frame.path)
     clearRadar(style)
+    clearField(style)
     val tiles = TileSet("2.1.0", template).apply {
-        minZoom = 1f
-        maxZoom = 7f
+        minZoom = RadarTiles.SOURCE_MIN_ZOOM.toFloat()
+        // Cap source zoom at 7 so MapLibre overscales instead of requesting z8+
+        maxZoom = RadarTiles.SOURCE_MAX_ZOOM.toFloat()
     }
     style.addSource(RasterSource(RADAR_SOURCE, tiles, 256))
-    style.addLayer(
-        RasterLayer(RADAR_LAYER, RADAR_SOURCE).withProperties(
-            PropertyFactory.rasterOpacity(opacity),
-        ),
+    val radarLayer = RasterLayer(RADAR_LAYER, RADAR_SOURCE).withProperties(
+        PropertyFactory.rasterOpacity(opacity),
     )
+    if (style.getLayer(MARKER_LAYER) != null) {
+        style.addLayerBelow(radarLayer, MARKER_LAYER)
+    } else {
+        style.addLayer(radarLayer)
+    }
 }
 
-private fun applySamples(
+private fun applyFieldRaster(
     style: Style,
     samples: List<SamplePoint>,
+    bounds: FieldRasterInterpolator.Bounds,
     layer: WeatherLayer,
-    overlay: MapOverlayController,
     opacity: Float,
 ) {
     clearRadar(style)
-    val features = samples.map { s ->
-        Feature.fromGeometry(Point.fromLngLat(s.lon, s.lat)).also {
-            it.addNumberProperty("value", s.value)
-        }
-    }
-    (style.getSource(SAMPLE_SOURCE) as? GeoJsonSource)
-        ?.setGeoJson(FeatureCollection.fromFeatures(features))
-    val avgColor = samples.firstOrNull()?.let {
-        AndroidColor.parseColor(
-            when (layer) {
-                WeatherLayer.TEMPERATURE -> overlay.colorForTemperature(it.value)
-                WeatherLayer.CLOUDS -> overlay.colorForCloud(it.value)
-                WeatherLayer.RADAR -> "#888888"
-            },
-        )
-    } ?: AndroidColor.GRAY
-    style.getLayer(SAMPLE_LAYER)?.setProperties(
-        PropertyFactory.circleOpacity(opacity * 0.65f),
-        PropertyFactory.circleColor(avgColor),
-        PropertyFactory.circleRadius(26f),
-        PropertyFactory.circleBlur(0.85f),
+    clearField(style)
+    val bitmap = when (layer) {
+        WeatherLayer.TEMPERATURE -> FieldRasterInterpolator.renderTemperature(samples, bounds, opacity = opacity)
+        WeatherLayer.CLOUDS -> FieldRasterInterpolator.renderCloudCover(samples, bounds, opacity = opacity)
+        WeatherLayer.RADAR -> null
+    } ?: return
+
+    val quad = LatLngQuad(
+        LatLng(bounds.latNorth, bounds.lonWest),
+        LatLng(bounds.latNorth, bounds.lonEast),
+        LatLng(bounds.latSouth, bounds.lonEast),
+        LatLng(bounds.latSouth, bounds.lonWest),
     )
+    style.addSource(ImageSource(FIELD_SOURCE, quad, bitmap))
+    val fieldLayer = RasterLayer(FIELD_LAYER, FIELD_SOURCE).withProperties(
+        PropertyFactory.rasterOpacity(1f),
+    )
+    if (style.getLayer(MARKER_LAYER) != null) {
+        style.addLayerBelow(fieldLayer, MARKER_LAYER)
+    } else {
+        style.addLayer(fieldLayer)
+    }
 }
 
 private fun setMarker(style: Style, lat: Double, lon: Double) {
+    ensureMarker(style)
     val feature = Feature.fromGeometry(Point.fromLngLat(lon, lat))
     (style.getSource(MARKER_SOURCE) as? GeoJsonSource)
         ?.setGeoJson(FeatureCollection.fromFeatures(arrayOf(feature)))

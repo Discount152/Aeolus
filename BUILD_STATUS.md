@@ -1,39 +1,32 @@
-# Aeolus 1.0 — Build Status
+# Aeolus — Build Status
 
 Updated: 2026-10-22
 
-## Environment
+## Current release
 
-| Item | Status |
-|------|--------|
-| Repo root | `D:\Project Aeolus` ✓ |
-| Origin | `https://github.com/Discount152/Aeolus.git` ✓ |
-| Branch | `cursor/aeolus-1.0-full-build-36b5` |
-| JDK | OpenJDK Temurin 21.0.10 ✓ |
-| Android SDK | `D:\Android\Sdk` (platform 35, build-tools 35.0.0) ✓ |
-| Emulator/adb | No emulator AVD; no adb devices |
+| Item | Value |
+|------|-------|
+| versionName | `1.0.1` |
+| versionCode | `2` |
+| Branch | `cursor/aeolus-1.0.1-qa-repair-36b5` |
+| APK | `dist/Aeolus-v1.0.1.apk` |
+| Prior APK preserved | `dist/Aeolus-v1.0.0.apk` ✓ |
 
-## Milestones
+## 1.0.1 QA repair
 
-1. [x] bootstrap
-2. [x] theme/navigation
-3. [x] network/data
-4. [x] consensus/confidence
-5. [x] Today
-6. [x] Forecast
-7. [x] Models
-8. [x] Map
-9. [x] caching/settings/resilience
-10. [x] QA/release
+| Fix | Status |
+|-----|--------|
+| ECMWF ensemble | Fixed (URL-encode timezone; IO dispatcher; per-day ensemble map) |
+| Radar maxzoom overscale | Fixed (`/256/` tile path + source maxZoom 7) |
+| Temp/cloud continuous rasters | Fixed (bilinear → ImageSource) |
+| Location dedupe | Fixed (`LocationIdentity`) |
+| Offline cache | Fixed (hydrate-first + shared StateFlow) |
+| Cross-tab refresh | Fixed (activity-scoped VM + repository weather flow) |
+| Partial-provider tests | Added |
 
-## QA snapshot
+## QA
 
-- Unit tests: **20 passed** (debug + release runs)
-- Lint: **0 errors**, 14 warnings (dependency version suggestions)
-- `assembleRelease`: **SUCCESS** (signed)
-- APK: `dist/Aeolus-v1.0.0.apk`
-- SHA-256: see `dist/SHA256.txt`
-
-## Current focus
-
-Complete — documentation and local commits.
+- Unit tests: **43 passed**
+- Lint: **0 errors**, 14 warnings
+- `assembleRelease`: **SUCCESS**
+- Emulator/device: none attached on Aeolus-PC

@@ -138,6 +138,7 @@ data class WeatherBundle(
     val fetchedAtEpochMs: Long,
     val models: List<ModelForecast>,
     val ensemble: EnsembleMemberSummary?,
+    val ensembleByDate: Map<String, EnsembleMemberSummary> = emptyMap(),
     val consensusHourly: List<HourlyPoint>,
     val consensusDaily: List<ConsensusDaily>,
     val confidenceByDate: Map<String, ConfidenceBreakdown>,

@@ -29,7 +29,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.discount152.aeolus.domain.models.ForecastModelId
 import com.discount152.aeolus.ui.components.ConfidenceBadge
 import com.discount152.aeolus.ui.components.ModelBarRow
@@ -37,7 +36,7 @@ import com.discount152.aeolus.ui.components.MetricTile
 import com.discount152.aeolus.ui.components.formatPrecip
 import com.discount152.aeolus.ui.components.formatTemp
 import com.discount152.aeolus.ui.state.WeatherViewModel
-import com.discount152.aeolus.ui.state.aeolusContainer
+import com.discount152.aeolus.ui.state.rememberWeatherViewModel
 import com.discount152.aeolus.ui.theme.PhosphorGreen
 import com.discount152.aeolus.ui.theme.TerminalBackground
 import com.discount152.aeolus.ui.theme.TerminalBorder
@@ -50,9 +49,7 @@ import java.time.format.DateTimeFormatter
 
 @Composable
 fun ModelsScreen(modifier: Modifier = Modifier) {
-    val app = LocalContext.current.applicationContext as android.app.Application
-    val container = app.aeolusContainer()
-    val vm: WeatherViewModel = viewModel(factory = WeatherViewModel.factory(container))
+    val vm: WeatherViewModel = rememberWeatherViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
     val bundle = state.bundle
     var selectedDate by remember(bundle) {
@@ -143,7 +140,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                 }
             }
 
-            val ens = if (selectedDate == bundle.consensusDaily.firstOrNull()?.date) bundle.ensemble else null
+            val ens = selectedDate?.let { bundle.ensembleByDate[it] } ?: bundle.ensemble
             Text("ECMWF ENSEMBLE", color = PhosphorGreen, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             if (ens == null) {
                 Text("ENSEMBLE DATA UNAVAILABLE", color = TerminalMuted, fontFamily = FontFamily.Monospace)

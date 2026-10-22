@@ -35,7 +35,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.discount152.aeolus.domain.models.HourlyPoint
 import com.discount152.aeolus.domain.models.WeatherCodes
 import com.discount152.aeolus.ui.components.ConfidenceBadge
@@ -48,7 +47,7 @@ import com.discount152.aeolus.ui.components.formatPrecip
 import com.discount152.aeolus.ui.components.formatTemp
 import com.discount152.aeolus.ui.components.formatWind
 import com.discount152.aeolus.ui.state.WeatherViewModel
-import com.discount152.aeolus.ui.state.aeolusContainer
+import com.discount152.aeolus.ui.state.rememberWeatherViewModel
 import com.discount152.aeolus.ui.theme.PhosphorGreen
 import com.discount152.aeolus.ui.theme.TerminalBackground
 import com.discount152.aeolus.ui.theme.TerminalBorder
@@ -64,8 +63,7 @@ fun TodayScreen(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val container = LocalContext.current.aeolusContainer()
-    val vm: WeatherViewModel = viewModel(factory = WeatherViewModel.factory(container))
+    val vm: WeatherViewModel = rememberWeatherViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
     val bundle = state.bundle
     val location = state.location

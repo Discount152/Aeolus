@@ -66,21 +66,28 @@ fun StaleBanner(lastUpdatedEpochMs: Long, offline: Boolean, modifier: Modifier =
 
 @Composable
 fun ConfidenceBadge(confidence: ConfidenceBreakdown?, modifier: Modifier = Modifier) {
-    val score = confidence?.score ?: 0
-    val category = confidence?.category ?: ConfidenceCategory.VERY_LOW
+    val unavailable = confidence == null
+    val score = confidence?.score
+    val category = confidence?.category
     val color = when (category) {
         ConfidenceCategory.HIGH -> PhosphorGreen
         ConfidenceCategory.MODERATE -> Color(0xFFB6E35A)
         ConfidenceCategory.LOW -> Color(0xFFFFB454)
         ConfidenceCategory.VERY_LOW -> Color(0xFFFF6B6B)
+        null -> TerminalMuted
     }
+    val label = if (unavailable) "—" else "$score% · $category"
     Column(
         modifier = modifier
             .background(TerminalElevated.copy(alpha = 0.92f), PanelShape)
             .border(1.dp, color.copy(alpha = 0.45f), PanelShape)
             .padding(12.dp)
             .semantics {
-                contentDescription = "Consensus Confidence $score percent $category"
+                contentDescription = if (unavailable) {
+                    "Consensus Confidence unavailable"
+                } else {
+                    "Consensus Confidence $score percent $category"
+                }
             },
     ) {
         Text(
@@ -90,7 +97,7 @@ fun ConfidenceBadge(confidence: ConfidenceBreakdown?, modifier: Modifier = Modif
             fontFamily = FontFamily.Monospace,
         )
         Text(
-            text = "$score% · $category",
+            text = label,
             color = color,
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold,

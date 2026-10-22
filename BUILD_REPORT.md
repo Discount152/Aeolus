@@ -1,103 +1,80 @@
-# Aeolus 1.0 — Build Report
+# Aeolus 1.0.1 — QA Repair Build Report
 
-## Detected build environment
+## Version
 
-| Component | Value |
-|-----------|-------|
-| Host | Aeolus-PC (Windows 10 10.0.19045) |
-| Repository | `D:\Project Aeolus` → `https://github.com/Discount152/Aeolus.git` |
-| Branch | `cursor/aeolus-1.0-full-build-36b5` |
-| JDK | Eclipse Temurin 21.0.10 (`JAVA_HOME`) |
-| Android SDK | `D:\Android\Sdk` |
-| Platform | Android API 35 |
-| Build-tools | 35.0.0 |
-| Gradle | 8.11.1 (wrapper) |
-| AGP | 8.7.3 |
-| Kotlin | 2.0.21 |
-| Compose BOM | 2024.10.01 |
-| MapLibre | org.maplibre.gl:android-sdk:11.8.0 |
+- versionName: `1.0.1`
+- versionCode: `2`
+- Prior artifact preserved: `dist/Aeolus-v1.0.0.apk`
 
-## Completed features
+## Root causes (manual QA failures)
 
-- App id `com.discount152.aeolus`, name Aeolus, version 1.0.0 / versionCode 1, minSdk 35
-- Phosphor-terminal dark UI with TODAY / FORECAST / MODELS / MAP + Settings
-- Open-Meteo ECMWF / ICON / GFS deterministic forecasts
-- ECMWF ensemble analysis with dynamic member counts
-- Robust median consensus + MAD outlier detection
-- Consensus Confidence (weights renormalized without stability history)
-- Forecast snapshot persistence + stability signals
-- Location search, device location (foreground), map pin selection, saved locations
-- Units (°C/°F, wind, precip, distance) via DataStore
-- Offline/stale cached forecast labeling
-- MapLibre + OpenFreeMap basemap; RainViewer radar play/scrub/opacity; Open-Meteo temp/cloud sample overlays with failure isolation
+### 1. ECMWF ensemble unavailable
+- **Cause:** Ensemble request built timezone as a raw query fragment (`Europe/Amsterdam`). The `/` truncated/broke the URL. Failures were swallowed (`getOrNull`). Blocking OkHttp also ran off an unconstrained dispatcher from the UI scope. Models UI only bound `bundle.ensemble` for the first forecast day.
+- **Fix:** `HttpUrl` query encoding; `Dispatchers.IO`; parse/store `ensembleByDate` for all days; Models reads `ensembleByDate[selectedDate]`.
 
-## Tests executed
+### 2. Offline cache blank after restart
+- **Cause:** Startup always force-refreshed without hydrating disk cache first; nav-destination-scoped ViewModels did not share restored state; null confidence rendered as `0% VERY_LOW`.
+- **Fix:** `hydrateFromCache` before network; repository `StateFlow` as SoT; activity-scoped ViewModel; ConfidenceBadge shows `—` when confidence is null; failed refresh never replaces valid cache.
 
-```text
-.\gradlew.bat test
-```
+### 3. Cross-tab refresh
+- **Cause:** Each Compose destination created its own `WeatherViewModel` via nav back-stack `viewModel()`.
+- **Fix:** `rememberWeatherViewModel()` uses `ComponentActivity` store + repository `weather` flow shared by Today/Forecast/Models.
 
-| Suite | Tests | Failures | Errors |
-|-------|-------|----------|--------|
-| UnitConverterTest | 4 | 0 | 0 |
-| ConsensusEngineTest | 3 | 0 | 0 |
-| ConfidenceEngineTest | 6 | 0 | 0 |
-| EnsembleAnalyzerTest | 2 | 0 | 0 |
-| StabilityAnalyzerTest | 2 | 0 | 0 |
-| TimezoneGroupingTest | 3 | 0 | 0 |
-| **Total** | **20** | **0** | **0** |
+### 4. Radar “zoom level not supported”
+- **Cause:** RainViewer tile URL omitted `/256/`; overscale relied on maxZoom alone with an incorrect template.
+- **Fix:** `RadarTiles.tileTemplate` → `{host}{path}/256/{z}/{x}/{y}/…` with TileSet `maxZoom = 7` so MapLibre overscales beyond source zoom.
 
-(Same suites executed for debug and release unit-test variants.)
+### 5. Temperature/cloud dot grids
+- **Cause:** CircleLayer sample markers.
+- **Fix:** Shared `FieldRasterInterpolator` (bilinear) → georeferenced `ImageSource` raster layer; no sample dots.
+
+### 6. Saved-location duplicates
+- **Cause:** Append-only save by volatile ids (`device:lat,lon`).
+- **Fix:** `LocationIdentity` canonical geocoding ids, GPS tolerance, startup dedupe migration.
+
+## Subsystems / files changed (high level)
+
+- `data/repository/WeatherRepository.kt`, `data/network/ForecastMapper.kt`, `data/cache/ForecastCache.kt`
+- `location/LocationIdentity.kt`, `ui/state/WeatherViewModel.kt`, `RememberWeatherViewModel.kt`
+- `map/RadarTiles.kt`, `map/FieldRasterInterpolator.kt`, `ui/map/MapScreen.kt`
+- `ui/models/ModelsScreen.kt`, `ui/components/WeatherComponents.kt`
+- `domain/models/WeatherModels.kt` (`ensembleByDate`)
+- Tests under `app/src/test/...` + fixtures in `app/src/test/resources/`
+- `app/build.gradle.kts` version bump
+
+## Tests added
+
+- `EnsembleFixtureTest` (Amsterdam + Turkey fixtures, URL encoding)
+- `LocationIdentityTest`
+- `RadarTilesTest`
+- `FieldRasterInterpolatorTest`
+- `PartialProviderFailureTest`
+- `ForecastCacheRoundTripTest`
+- `SharedWeatherStateTest`
+
+## Full test result
+
+`.\gradlew.bat test` → **43 tests, 0 failures, 0 errors** (debug unit suite).
 
 ## Lint result
 
-```text
-.\gradlew.bat lint
-```
-
-**PASS** — 0 errors, 14 warnings (mostly “newer dependency version available”).
-
-Report: `app/build/reports/lint-results-debug.html`
+`.\gradlew.bat lint` → **PASS** (0 errors, 14 warnings — dependency version suggestions).
 
 ## Release-build result
 
-```text
-.\gradlew.bat assembleRelease
-```
+`.\gradlew.bat assembleRelease` → **SUCCESS** (signed).
 
-**SUCCESS** — R8 minify + resource shrink enabled; APK signed with local Aeolus release keystore.
+## Runtime testing
 
-## Runtime / emulator / device testing
+No emulator AVD / no adb device on Aeolus-PC. Runtime verification of ensemble/radar/rasters/offline left to device QA of this APK.
 
-**Not performed.** `adb devices` empty; `avdmanager list avd` empty. No physical device attached. Compile, unit tests, lint, and signed release packaging completed.
+## Artifacts
 
-## Limitations
+- `D:\Project Aeolus\dist\Aeolus-v1.0.1.apk`
+- SHA-256: `d797a82cd2afb542d251242144e1ff76d78e610a326ce3d5403ba65e96ff60ac`
+- `dist/SHA256.txt` updated for 1.0.1
+- `dist/Aeolus-v1.0.0.apk` preserved
 
-- No emulator/device smoke test on this machine
-- Weather conditions shown as WMO text labels (Meteocons asset pack not bundled in v1)
-- Temperature/cloud map layers are Open-Meteo sample grids, not meteorological rasters
-- Default location Amsterdam until search/device/map selection
-- GitHub push may be unavailable depending on local credentials
+## Environment
 
-## Final APK
-
-Path: `D:\Project Aeolus\dist\Aeolus-v1.0.0.apk`
-
-SHA-256: `7ea078444213f8cc1f460a72cf338cf9f71cba409d0fe9c66772e845190c1685`
-
-Also recorded in `dist/SHA256.txt`.
-
-## Keystore
-
-Local (gitignored):
-
-- `keystore/aeolus-release.jks`
-- `keystore/signing.properties`
-
-Preserve for future Aeolus releases. Never commit.
-
-## Git status
-
-Committed on `cursor/aeolus-1.0-full-build-36b5` (`64e4b73`).
-
-**Push:** succeeded to `origin/cursor/aeolus-1.0-full-build-36b5`.
+- JDK Temurin 21, Android SDK API 35, Gradle 8.11.1, AGP 8.7.3, Kotlin 2.0.21

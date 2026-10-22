@@ -22,6 +22,29 @@ class ForecastCache(
         }.getOrNull()
     }
 
+    /** Fallback when exact id miss (e.g. GPS jitter id change) — most recent bundle for nearby coords. */
+    fun findNearest(location: com.discount152.aeolus.domain.models.GeoLocation): WeatherBundle? {
+        val files = cacheDir.listFiles()?.filter { it.isFile && it.extension == "json" }.orEmpty()
+        var best: WeatherBundle? = null
+        var bestDist = Double.MAX_VALUE
+        for (file in files) {
+            val bundle = runCatching {
+                json.decodeFromString<WeatherBundle>(file.readText())
+            }.getOrNull() ?: continue
+            val d = com.discount152.aeolus.location.LocationIdentity.distanceMeters(
+                location.latitude,
+                location.longitude,
+                bundle.location.latitude,
+                bundle.location.longitude,
+            )
+            if (d < bestDist && d <= com.discount152.aeolus.location.LocationIdentity.GPS_MATCH_RADIUS_M) {
+                bestDist = d
+                best = bundle
+            }
+        }
+        return best
+    }
+
     fun write(locationId: String, bundle: WeatherBundle) {
         val target = fileFor(locationId)
         target.parentFile?.mkdirs()

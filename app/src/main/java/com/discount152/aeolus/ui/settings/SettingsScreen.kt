@@ -29,13 +29,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.discount152.aeolus.domain.units.DistanceUnit
 import com.discount152.aeolus.domain.units.PrecipitationUnit
 import com.discount152.aeolus.domain.units.TemperatureUnit
 import com.discount152.aeolus.domain.units.WindUnit
 import com.discount152.aeolus.ui.state.WeatherViewModel
-import com.discount152.aeolus.ui.state.aeolusContainer
+import com.discount152.aeolus.ui.state.rememberWeatherViewModel
 import com.discount152.aeolus.ui.theme.PhosphorGreen
 import com.discount152.aeolus.ui.theme.TerminalBackground
 import com.discount152.aeolus.ui.theme.TerminalMuted
@@ -46,9 +45,7 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val app = LocalContext.current.applicationContext as android.app.Application
-    val container = app.aeolusContainer()
-    val vm: WeatherViewModel = viewModel(factory = WeatherViewModel.factory(container))
+    val vm: WeatherViewModel = rememberWeatherViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
     val units = state.units
 

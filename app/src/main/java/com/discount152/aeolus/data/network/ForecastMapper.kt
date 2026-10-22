@@ -123,17 +123,30 @@ object ForecastMapper {
 
     private fun extractMemberValues(daily: JsonObject, base: String, index: Int): List<Double> {
         val out = mutableListOf<Double>()
-        // Also include control if present as base key without member suffix
-        daily[base]?.let { el ->
-            val arr = el as? JsonArray
-            arr?.getOrNull(index)?.jsonPrimitive?.doubleOrNull?.let { out.add(it) }
+        fun readAt(key: String) {
+            val arr = daily[key] as? JsonArray ?: return
+            val el = arr.getOrNull(index) ?: return
+            if (el is kotlinx.serialization.json.JsonNull) return
+            el.jsonPrimitive.doubleOrNull?.let { out.add(it) }
         }
-        daily.keys.filter { it.startsWith("${base}_member") }.sorted().forEach { key ->
-            val arr = daily[key] as? JsonArray ?: return@forEach
-            arr.getOrNull(index)?.jsonPrimitive?.doubleOrNull?.let { out.add(it) }
-        }
+        // Control run (no member suffix) + every *_memberNN dynamically
+        readAt(base)
+        daily.keys
+            .filter { it.startsWith("${base}_member") }
+            .sortedWith(compareBy { key ->
+                key.substringAfter("${base}_member").toIntOrNull() ?: Int.MAX_VALUE
+            })
+            .forEach { readAt(it) }
         return out
     }
+
+    /** Discover how many valid ensemble member keys exist for a base variable. */
+    fun discoverMemberKeys(daily: JsonObject, base: String): List<String> =
+        daily.keys
+            .filter { it.startsWith("${base}_member") }
+            .sortedWith(compareBy { key ->
+                key.substringAfter("${base}_member").toIntOrNull() ?: Int.MAX_VALUE
+            })
 
     fun parseTimeMs(iso: String): Long {
         return runCatching {

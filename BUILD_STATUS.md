@@ -6,27 +6,35 @@ Updated: 2026-10-22
 
 | Item | Value |
 |------|-------|
-| versionName | `1.0.1` |
-| versionCode | `2` |
-| Branch | `cursor/aeolus-1.0.1-qa-repair-36b5` |
-| APK | `dist/Aeolus-v1.0.1.apk` |
-| Prior APK preserved | `dist/Aeolus-v1.0.0.apk` ✓ |
+| versionName | `1.0.2` |
+| versionCode | `3` |
+| Branch | `cursor/aeolus-1.0.2-qa-repair-36b5` |
+| APK | `dist/Aeolus-v1.0.2.apk` |
+| Prior APKs preserved | `dist/Aeolus-v1.0.0.apk`, `dist/Aeolus-v1.0.1.apk` ✓ |
 
-## 1.0.1 QA repair
+## 1.0.2 second QA repair
 
 | Fix | Status |
 |-----|--------|
-| ECMWF ensemble | Fixed (URL-encode timezone; IO dispatcher; per-day ensemble map) |
-| Radar maxzoom overscale | Fixed (`/256/` tile path + source maxZoom 7) |
-| Temp/cloud continuous rasters | Fixed (bilinear → ImageSource) |
-| Location dedupe | Fixed (`LocationIdentity`) |
-| Offline cache | Fixed (hydrate-first + shared StateFlow) |
-| Cross-tab refresh | Fixed (activity-scoped VM + repository weather flow) |
-| Partial-provider tests | Added |
+| Radar double-buffer (no flash) | Fixed (`RadarDoubleBuffer`, fade 0) |
+| Temp viewport + legend | Fixed (`ViewportSampler` + legends) |
+| Cloud nonlinear alpha + legend | Fixed |
+| Overlay-independent locate | Fixed (`locateOnMap`) |
+| Process-death durable cache | Fixed (`ForecastCache` File API + test) |
+| LIVE/REFRESHING/OFFLINE states | Fixed (`ConnectivityPresentation`) |
+
+## 1.0.1 regressions (must stay fixed)
+
+| Fix | Status |
+|-----|--------|
+| ECMWF ensemble | Preserved |
+| Location dedupe | Preserved |
+| Cross-tab refresh | Preserved |
+| Units | Preserved |
+| Radar `/256/` maxZoom 7 | Preserved |
 
 ## QA
 
-- Unit tests: **43 passed**
-- Lint: **0 errors**, 14 warnings
-- `assembleRelease`: **SUCCESS**
-- Emulator/device: none attached on Aeolus-PC
+- Unit tests: **56 passed**
+- Lint: **0 errors**, 16 warnings
+- assembleRelease: **SUCCESS**

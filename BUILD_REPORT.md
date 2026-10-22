@@ -98,4 +98,6 @@ Preserve for future Aeolus releases. Never commit.
 
 ## Git status
 
-Local commits on `cursor/aeolus-1.0-full-build-36b5`. Push attempted if auth works; otherwise commits remain local awaiting push.
+Committed on `cursor/aeolus-1.0-full-build-36b5` (`64e4b73`).
+
+**Push:** succeeded to `origin/cursor/aeolus-1.0-full-build-36b5`.

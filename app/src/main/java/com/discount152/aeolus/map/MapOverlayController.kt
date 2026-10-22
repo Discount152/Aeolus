@@ -20,6 +20,16 @@ enum class WeatherLayer { RADAR, TEMPERATURE, CLOUDS }
 
 data class SamplePoint(val lat: Double, val lon: Double, val value: Double)
 
+data class FieldSampleResult(
+    val bounds: FieldRasterInterpolator.Bounds,
+    val rows: Int,
+    val cols: Int,
+    /** Row-major south→north, west→east; null = missing API value. */
+    val values: Array<Array<Double?>>,
+    /** Samples with non-null API values only. */
+    val points: List<SamplePoint>,
+)
+
 data class RadarState(
     val host: String? = null,
     val frames: List<RainViewerFrame> = emptyList(),
@@ -37,7 +47,7 @@ class MapOverlayController(
     private val mutex = Mutex()
     private var radarCache: RadarState? = null
     private var radarCachedAt = 0L
-    private val sampleCache = mutableMapOf<String, Pair<Long, List<SamplePoint>>>()
+    private val sampleCache = mutableMapOf<String, Pair<Long, FieldSampleResult>>()
 
     suspend fun loadRadar(force: Boolean = false): RadarState = mutex.withLock {
         val now = System.currentTimeMillis()
@@ -76,37 +86,38 @@ class MapOverlayController(
         latNorth: Double,
         lonWest: Double,
         lonEast: Double,
-        rows: Int = 6,
-        cols: Int = 8,
-    ): List<SamplePoint> = withContext(Dispatchers.IO) {
-        val key = "${layer.name}:${"%.2f".format(latSouth)}:${"%.2f".format(latNorth)}:" +
-            "${"%.2f".format(lonWest)}:${"%.2f".format(lonEast)}"
+    ): FieldSampleResult = withContext(Dispatchers.IO) {
+        val padded = ViewportSampler.padBounds(latSouth, latNorth, lonWest, lonEast)
+        val key = ViewportSampler.cacheKey(layer, padded)
         val cached = sampleCache[key]
         if (cached != null && System.currentTimeMillis() - cached.first < 10 * 60_000L) {
             return@withContext cached.second
         }
 
-        val lats = (0 until rows).map { i ->
-            latSouth + (latNorth - latSouth) * i / (rows - 1).coerceAtLeast(1).toDouble()
+        if (layer == WeatherLayer.RADAR) {
+            return@withContext FieldSampleResult(
+                bounds = padded,
+                rows = 0,
+                cols = 0,
+                values = emptyArray(),
+                points = emptyList(),
+            )
         }
-        val lons = (0 until cols).map { j ->
-            lonWest + (lonEast - lonWest) * j / (cols - 1).coerceAtLeast(1).toDouble()
-        }
-        val points = mutableListOf<Pair<Double, Double>>()
-        for (lat in lats) {
-            for (lon in lons) {
-                points.add(lat to lon)
-            }
-        }
+
+        val grid = ViewportSampler.buildCoordinates(padded)
+        val rows = grid.rows
+        val cols = grid.cols
+        val values = grid.values
+        val coordPoints = grid.points
 
         val variable = when (layer) {
             WeatherLayer.TEMPERATURE -> "temperature_2m"
             WeatherLayer.CLOUDS -> "cloud_cover"
-            WeatherLayer.RADAR -> return@withContext emptyList()
+            WeatherLayer.RADAR -> error("unreachable")
         }
 
-        val latParam = points.joinToString(",") { it.first.toString() }
-        val lonParam = points.joinToString(",") { it.second.toString() }
+        val latParam = coordPoints.joinToString(",") { it.lat.toString() }
+        val lonParam = coordPoints.joinToString(",") { it.lon.toString() }
         val url =
             "https://api.open-meteo.com/v1/forecast?latitude=$latParam&longitude=$lonParam" +
                 "&current=$variable&timezone=auto"
@@ -116,27 +127,43 @@ class MapOverlayController(
         }
 
         val root = json.parseToJsonElement(body)
-        val samples = mutableListOf<SamplePoint>()
+        val filledPoints = mutableListOf<SamplePoint>()
         when (root) {
             is JsonArray -> {
                 root.jsonArray.forEachIndexed { idx, el ->
                     val obj = el.jsonObject
                     val cur = obj["current"]?.jsonObject
                     val value = cur?.get(variable)?.jsonPrimitive?.doubleOrNull
-                    val p = points.getOrNull(idx) ?: return@forEachIndexed
-                    if (value != null) samples.add(SamplePoint(p.first, p.second, value))
+                    val p = coordPoints.getOrNull(idx) ?: return@forEachIndexed
+                    val r = idx / cols
+                    val c = idx % cols
+                    values[r][c] = value
+                    if (value != null) {
+                        filledPoints.add(SamplePoint(p.lat, p.lon, value))
+                    }
                 }
             }
             is JsonObject -> {
                 val cur = root.jsonObject["current"]?.jsonObject
                 val value = cur?.get(variable)?.jsonPrimitive?.doubleOrNull
-                val p = points.firstOrNull()
-                if (value != null && p != null) samples.add(SamplePoint(p.first, p.second, value))
+                val p = coordPoints.firstOrNull()
+                if (p != null) {
+                    values[0][0] = value
+                    if (value != null) filledPoints.add(SamplePoint(p.lat, p.lon, value))
+                }
             }
             else -> Unit
         }
-        sampleCache[key] = System.currentTimeMillis() to samples
-        samples
+
+        val result = FieldSampleResult(
+            bounds = padded,
+            rows = rows,
+            cols = cols,
+            values = values,
+            points = filledPoints,
+        )
+        sampleCache[key] = System.currentTimeMillis() to result
+        result
     }
 
     fun colorForTemperature(c: Double): String {

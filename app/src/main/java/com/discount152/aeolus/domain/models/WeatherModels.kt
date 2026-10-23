@@ -101,6 +101,7 @@ data class ConsensusDaily(
     val precipRangeMm: PairRange? = null,
     val availableModels: List<ForecastModelId> = emptyList(),
     val missingModels: List<ForecastModelId> = emptyList(),
+    val skySummary: String? = null,
 )
 
 @Serializable

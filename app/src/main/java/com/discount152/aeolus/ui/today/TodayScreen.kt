@@ -2,6 +2,7 @@ package com.discount152.aeolus.ui.today
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,6 +64,7 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun TodayScreen(
     onOpenSettings: () -> Unit,
+    onOpenForecastDay: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val vm: WeatherViewModel = rememberWeatherViewModel()
@@ -263,6 +265,7 @@ fun TodayScreen(
                                     .weight(1f)
                                     .background(TerminalElevated, RoundedCornerShape(10.dp))
                                     .border(1.dp, TerminalBorder, RoundedCornerShape(10.dp))
+                                    .clickable { onOpenForecastDay(day.date) }
                                     .padding(6.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {

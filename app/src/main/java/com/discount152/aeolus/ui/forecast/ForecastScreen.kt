@@ -12,12 +12,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,13 +52,16 @@ import com.discount152.aeolus.ui.theme.TerminalMuted
 import com.discount152.aeolus.ui.theme.TerminalText
 import java.time.ZoneId
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ForecastScreen(modifier: Modifier = Modifier) {
     val vm: WeatherViewModel = rememberWeatherViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
+    val expandDate by vm.forecastExpandDate.collectAsStateWithLifecycle()
     val bundle = state.bundle
     val zone = runCatching { ZoneId.of(state.location?.timezone ?: "UTC") }.getOrDefault(ZoneId.of("UTC"))
     var expanded by remember { mutableStateOf<String?>(null) }
+    val scrollState = rememberScrollState()
 
     Column(
         modifier = modifier
@@ -76,7 +83,7 @@ fun ForecastScreen(modifier: Modifier = Modifier) {
         }
 
         Column(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+            modifier = Modifier.fillMaxSize().verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text("48-HOUR DETAIL", color = PhosphorGreen, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
@@ -84,6 +91,14 @@ fun ForecastScreen(modifier: Modifier = Modifier) {
 
             Text("DAILY (15 DAYS)", color = PhosphorGreen, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             bundle.consensusDaily.take(15).forEach { day ->
+                val bringIntoView = remember(day.date) { BringIntoViewRequester() }
+                LaunchedEffect(expandDate, day.date) {
+                    if (expandDate == day.date) {
+                        expanded = day.date
+                        bringIntoView.bringIntoView()
+                        vm.consumeForecastExpandDate()
+                    }
+                }
                 DailyCard(
                     day = day,
                     confidence = bundle.confidenceByDate[day.date],
@@ -93,6 +108,7 @@ fun ForecastScreen(modifier: Modifier = Modifier) {
                     hourly = bundle.consensusHourly.filter { it.timeIso.startsWith(day.date) },
                     zone = zone,
                     missing = day.missingModels.map { it.displayName },
+                    modifier = Modifier.bringIntoViewRequester(bringIntoView),
                 )
             }
             Spacer(Modifier.height(24.dp))
@@ -110,9 +126,10 @@ private fun DailyCard(
     hourly: List<com.discount152.aeolus.domain.models.HourlyPoint>,
     zone: ZoneId,
     missing: List<String>,
+    modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .background(TerminalElevated.copy(alpha = 0.9f), RoundedCornerShape(12.dp))
             .border(1.dp, TerminalBorder, RoundedCornerShape(12.dp))
@@ -123,6 +140,9 @@ private fun DailyCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(day.date, color = TerminalText, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
                 Text(WeatherCodes.label(day.weatherCode), color = TerminalMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                day.skySummary?.let { sky ->
+                    Text("Sky: $sky", color = TerminalMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                }
             }
             Text(
                 "${formatTemp(day.tempMaxC, units)} / ${formatTemp(day.tempMinC, units)}",

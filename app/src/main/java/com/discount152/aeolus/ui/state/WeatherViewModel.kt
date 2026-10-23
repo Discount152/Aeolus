@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
@@ -69,6 +70,9 @@ class WeatherViewModel(
 
     private val _permissionRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val permissionRequests: SharedFlow<Unit> = _permissionRequests.asSharedFlow()
+
+    private val _forecastExpandDate = MutableStateFlow<String?>(null)
+    val forecastExpandDate: StateFlow<String?> = _forecastExpandDate.asStateFlow()
 
     val state: StateFlow<WeatherUiState> = combine(
         _meta,
@@ -287,6 +291,15 @@ class WeatherViewModel(
 
     fun clearSearch() {
         _meta.update { it.copy(searchQuery = "", searchResults = emptyList()) }
+    }
+
+    /** Navigate to Forecast and expand the daily card for [date] (yyyy-MM-dd). */
+    fun requestForecastDayExpand(date: String) {
+        _forecastExpandDate.value = date
+    }
+
+    fun consumeForecastExpandDate() {
+        _forecastExpandDate.value = null
     }
 
     fun updateUnits(units: UnitPreferences) {

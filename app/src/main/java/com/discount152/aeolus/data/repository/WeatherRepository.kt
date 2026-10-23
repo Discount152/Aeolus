@@ -14,6 +14,7 @@ import com.discount152.aeolus.domain.models.ForecastModelId
 import com.discount152.aeolus.domain.models.GeoLocation
 import com.discount152.aeolus.domain.models.ModelForecast
 import com.discount152.aeolus.domain.models.WeatherBundle
+import com.discount152.aeolus.domain.weather.SkyCondition
 import com.discount152.aeolus.domain.weather.StabilityAnalyzer
 import com.discount152.aeolus.location.LocationIdentity
 import kotlinx.coroutines.Dispatchers
@@ -80,11 +81,13 @@ class WeatherRepository(
     fun hydrateFromCache(location: GeoLocation, markStale: Boolean = false): WeatherBundle? {
         val key = LocationIdentity.cacheKey(location)
         val raw = cache.read(key) ?: cache.read(location.id) ?: cache.findNearest(location)
-        val cached = raw?.copy(
-            location = LocationIdentity.withStableId(raw.location),
-            fromCache = true,
-            stale = markStale,
-        )
+        val cached = raw?.let { bundle ->
+            enrichSkySummaries(bundle).copy(
+                location = LocationIdentity.withStableId(bundle.location),
+                fromCache = true,
+                stale = markStale,
+            )
+        }
         if (cached != null) {
             _weather.value = cached
         }
@@ -94,7 +97,7 @@ class WeatherRepository(
     /** Offline cold-start: publish LKG snapshot without touching per-location cache keys. */
     fun publishBootSnapshot(bundle: WeatherBundle) {
         val stable = LocationIdentity.withStableId(bundle.location)
-        _weather.value = bundle.copy(
+        _weather.value = enrichSkySummaries(bundle).copy(
             location = stable,
             fromCache = true,
             stale = true,
@@ -109,7 +112,7 @@ class WeatherRepository(
                 (cache.read(key) ?: cache.findNearest(stable))?.let { cached ->
                     val age = System.currentTimeMillis() - cached.fetchedAtEpochMs
                     if (age < 30 * 60_000L) {
-                        val tagged = cached.copy(fromCache = true, stale = false)
+                        val tagged = enrichSkySummaries(cached).copy(fromCache = true, stale = false)
                         _weather.value = tagged
                         return tagged
                     }
@@ -123,14 +126,14 @@ class WeatherRepository(
                 _weather.value = fresh
                 fresh
             } catch (e: Exception) {
-                val cached = (cache.read(key) ?: cache.findNearest(stable))
+                val cached = (cache.read(key) ?: cache.findNearest(stable))?.let { enrichSkySummaries(it) }
                     ?.copy(fromCache = true, stale = true)
                 if (cached != null) {
                     // Never replace valid cache with empty/error state
                     _weather.value = cached
                     cached
                 } else if (_weather.value != null) {
-                    _weather.value!!.copy(fromCache = true, stale = true)
+                    enrichSkySummaries(_weather.value!!).copy(fromCache = true, stale = true)
                 } else {
                     throw e
                 }
@@ -164,7 +167,10 @@ class WeatherRepository(
         val today = LocalDate.now(zone)
 
         val consensusHourly = ConsensusEngine.buildConsensusHourly(models, 48)
-        val consensusDaily = ConsensusEngine.buildConsensusDaily(models)
+        val consensusDaily = SkyCondition.attachSkySummaries(
+            ConsensusEngine.buildConsensusDaily(models),
+            consensusHourly,
+        )
 
         val ensembleByDate = linkedMapOf<String, EnsembleMemberSummary>()
         if (ensembleRaw != null) {
@@ -233,6 +239,11 @@ class WeatherRepository(
             if (!resp.isSuccessful) error("ensemble HTTP ${resp.code}")
             resp.body?.string() ?: error("empty ensemble body")
         }
+    }
+
+    private fun enrichSkySummaries(bundle: WeatherBundle): WeatherBundle {
+        val daily = SkyCondition.attachSkySummaries(bundle.consensusDaily, bundle.consensusHourly)
+        return if (daily == bundle.consensusDaily) bundle else bundle.copy(consensusDaily = daily)
     }
 
     companion object {

@@ -115,8 +115,6 @@ class ForecastPrecipPipelineTest {
         }
         val pipeline = ForecastPrecipPipeline(
             forecastApi = api,
-            gridCols = 3,
-            gridRows = 2,
             nowUtc = { Instant.parse("2024-06-01T00:00:00Z") },
             rasterEncoder = ForecastPrecipRasterEncoder { _, _, _ -> fakeBitmap },
         )
@@ -157,8 +155,6 @@ class ForecastPrecipPipelineTest {
         }
         val pipeline = ForecastPrecipPipeline(
             forecastApi = api,
-            gridCols = 3,
-            gridRows = 2,
             nowUtc = { Instant.parse("2024-06-01T00:00:00Z") },
             rasterEncoder = ForecastPrecipRasterEncoder { _, _, _ -> fakeBitmap },
         )

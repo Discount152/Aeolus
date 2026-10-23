@@ -114,7 +114,19 @@ fun AeolusNavHost() {
             modifier = Modifier.padding(innerPadding),
         ) {
             composable(AeolusRoutes.TODAY) {
-                TodayScreen(onOpenSettings = { navController.navigate(AeolusRoutes.SETTINGS) })
+                TodayScreen(
+                    onOpenSettings = { navController.navigate(AeolusRoutes.SETTINGS) },
+                    onOpenForecastDay = { date ->
+                        weatherVm.requestForecastDayExpand(date)
+                        navController.navigate(AeolusRoutes.FORECAST) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                )
             }
             composable(AeolusRoutes.FORECAST) {
                 ForecastScreen()

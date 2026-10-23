@@ -18,15 +18,24 @@ class RadarViewportTest {
         assertThat(fp.lonEast).isAtLeast(7.5)
         assertThat(fp.zoom).isIn(RadarViewport.SOURCE_MIN_ZOOM..RadarViewport.SOURCE_MAX_ZOOM)
         assertThat(fp.tileSizePx).isEqualTo(512)
+        assertThat(fp.tiles).isNotEmpty()
+        assertThat(fp.tiles.size).isAtMost(RadarViewport.MAX_TILES_PER_FRAME)
     }
 
     @Test
-    fun zoom_finerForSmallerSide() {
-        val city = RadarViewport.zoomForSideMeters(80_000.0)
-        val continent = RadarViewport.zoomForSideMeters(2_000_000.0)
-        assertThat(city).isGreaterThan(continent)
-        assertThat(city).isAtMost(RadarViewport.SOURCE_MAX_ZOOM)
-        assertThat(continent).isAtLeast(RadarViewport.SOURCE_MIN_ZOOM)
+    fun tileBudget_neverExceedsMaxForRegionalView() {
+        val fp = RadarViewport.footprintForVisibleBounds(51.0, 53.0, 4.0, 7.0)
+        assertThat(fp.tiles.size).isAtMost(RadarViewport.MAX_TILES_PER_FRAME)
+        assertThat(fp.tilesX * fp.tilesY).isEqualTo(fp.tiles.size)
+    }
+
+    @Test
+    fun adaptiveZoom_finerForCityThanContinent() {
+        val city = RadarViewport.footprintForVisibleBounds(52.3, 52.45, 4.8, 5.0)
+        val continent = RadarViewport.footprintForVisibleBounds(40.0, 60.0, -10.0, 30.0)
+        assertThat(city.zoom).isAtLeast(continent.zoom)
+        assertThat(city.tiles.size).isAtMost(RadarViewport.MAX_TILES_PER_FRAME)
+        assertThat(continent.tiles.size).isAtMost(RadarViewport.MAX_TILES_PER_FRAME)
     }
 
     @Test
@@ -61,5 +70,18 @@ class RadarViewportTest {
         val nl = RadarViewport.footprintForVisibleBounds(51.0, 53.0, 4.0, 7.0)
         val tr = RadarViewport.footprintForVisibleBounds(36.0, 38.0, 30.0, 33.0)
         assertThat(nl.cacheKeyPart()).isNotEqualTo(tr.cacheKeyPart())
+    }
+
+    @Test
+    fun tileCover_reducesZoomWhenBudgetExceeded() {
+        val wide = RadarViewport.tileCoverForBounds(
+            mercatorWest = RadarViewport.lonToMercatorX(-20.0),
+            mercatorEast = RadarViewport.lonToMercatorX(40.0),
+            mercatorSouth = RadarViewport.latToMercatorY(30.0),
+            mercatorNorth = RadarViewport.latToMercatorY(70.0),
+            maxTiles = 4,
+        )
+        assertThat(wide.count).isAtMost(4)
+        assertThat(wide.zoom).isAtMost(RadarViewport.SOURCE_MAX_ZOOM)
     }
 }

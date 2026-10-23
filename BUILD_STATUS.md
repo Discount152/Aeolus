@@ -6,24 +6,24 @@ Updated: 2026-10-23
 
 | Item | Value |
 |------|-------|
-| versionName | `1.0.4` |
-| versionCode | `5` |
-| Branch | `cursor/aeolus-1.0.4-radar-architecture-36b5` |
-| APK | `dist/Aeolus-v1.0.4.apk` |
-| Prior APKs | v1.0.0–v1.0.3 preserved ✓ |
+| versionName | `1.0.5` |
+| versionCode | `6` |
+| Branch | `cursor/aeolus-1.0.5-full-build-36b5` |
+| APK | `dist/Aeolus-v1.0.5.apk` |
+| Prior APKs | v1.0.0–v1.0.4 preserved ✓ |
 
-## 1.0.4 radar architecture
+## 1.0.5 jobs
 
 | Item | Status |
 |------|--------|
-| XYZ tiled animation removed | Done |
-| Centered complete ImageSource frames | Done |
-| Newest-first + READY-only playback | Done |
-| ~1 request/timestamp/viewport | Done |
-| Padded footprint reuse | Done |
+| Stitched mosaic radar ≤4 tiles/frame | Done |
+| AUTO_PAUSED_FOR_CAMERA resume | Done |
+| OBSERVED / FORECAST map modes | Done |
+| Map timezone modes | Done |
+| last_known_good cold-start | Done |
 
 ## QA
 
-- Unit tests: **62 passed**
-- Lint: **0 errors**, 16 warnings
+- Unit tests: **82 passed**
+- Lint: **0 errors**
 - assembleRelease: **SUCCESS**

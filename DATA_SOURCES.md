@@ -22,13 +22,23 @@
 
 `https://geocoding-api.open-meteo.com/v1/search`
 
-## Radar
+## Radar (Observed map mode)
 
 [RainViewer](https://www.rainviewer.com/) public Weather Maps API:
 
 `https://api.rainviewer.com/public/weather-maps.json`
 
 Historical past frames only (~2 hours). Nowcast frames are not used.
+
+Aeolus downloads 512 px XYZ tiles (`{path}/512/{z}/{x}/{y}/2/1_1.png`, max zoom 7),
+stitches a complete mosaic (≤ ~4 tiles/frame), and shows it via MapLibre ImageSource.
+MapLibre does not fetch animated radar tiles.
+
+## Forecast precipitation (Forecast map mode)
+
+Open-Meteo `/v1/forecast` with `models=best_match`, batched multi-coordinate request
+for a ~12×8 viewport sample grid, hourly precipitation for the next 24 hours.
+Local raster interpolation — not labeled as radar.
 
 ## Map basemap
 
@@ -37,7 +47,3 @@ OpenFreeMap dark style via MapLibre:
 `https://tiles.openfreemap.org/styles/dark`
 
 OSM data © OpenStreetMap contributors.
-
-## Temperature / cloud map layers
-
-Generated from Open-Meteo current conditions sampled on a viewport grid after camera idle (no keyed tile provider).

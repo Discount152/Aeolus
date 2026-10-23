@@ -26,6 +26,9 @@ class RadarFramePipelineTest {
         every { isRecycled } returns false
     }
     private val decoder = RadarImageDecoder { fakeBitmap }
+    private val stitcher: (RadarFootprint, List<Bitmap>) -> Bitmap = { _, tiles ->
+        tiles.first()
+    }
 
     @Before
     fun setUp() {
@@ -39,13 +42,19 @@ class RadarFramePipelineTest {
         server.shutdown()
     }
 
-    private fun enqueuePng() {
-        server.enqueue(
-            MockResponse()
-                .setBody(Buffer().write(byteArrayOf(1, 2, 3, 4)))
-                .setResponseCode(200),
-        )
+    private fun enqueuePng(count: Int = 1) {
+        repeat(count) {
+            server.enqueue(
+                MockResponse()
+                    .setBody(Buffer().write(byteArrayOf(1, 2, 3, 4)))
+                    .setResponseCode(200),
+            )
+        }
     }
+
+    private fun pipeline() = RadarFramePipeline(
+        api, OkHttpClient(), maxConcurrency = 2, decoder = decoder, stitcher = stitcher,
+    )
 
     @Test
     fun newestFrameFirst_thenHistoricalReadyOnly() = runBlocking {
@@ -59,12 +68,12 @@ class RadarFramePipelineTest {
             host = host,
             radar = RainViewerRadar(past = frames),
         )
-        repeat(3) { enqueuePng() }
-        val pipeline = RadarFramePipeline(api, OkHttpClient(), maxConcurrency = 2, decoder = decoder)
         val fp = RadarViewport.footprintForVisibleBounds(51.0, 52.0, 4.0, 5.0)
-        pipeline.loadForViewport(fp)
+        enqueuePng(frames.size * fp.tiles.size)
+        val p = pipeline()
+        p.loadForViewport(fp)
 
-        val session = pipeline.session.value!!
+        val session = p.session.value!!
         assertThat(session.readyFrames).hasSize(3)
         session.readyFrames.forEach { frame ->
             assertThat(frame.status).isEqualTo(RadarFrameStatus.READY)
@@ -73,10 +82,11 @@ class RadarFramePipelineTest {
         val firstReq = server.takeRequest(2, TimeUnit.SECONDS)
         assertThat(firstReq).isNotNull()
         assertThat(firstReq!!.path).contains("radar/new")
+        assertThat(fp.tiles.size).isAtMost(RadarViewport.MAX_TILES_PER_FRAME)
     }
 
     @Test
-    fun failedFrame_notMasqueradingAsPrevious() = runBlocking {
+    fun failedTile_preventsFrameReady() = runBlocking {
         val host = server.url("/").toString().trimEnd('/')
         val frames = listOf(
             RainViewerFrame(100, "/v2/radar/a"),
@@ -86,22 +96,25 @@ class RadarFramePipelineTest {
             host = host,
             radar = RainViewerRadar(past = frames),
         )
-        enqueuePng()
-        server.enqueue(MockResponse().setResponseCode(404))
-        server.enqueue(MockResponse().setResponseCode(404))
-
-        val pipeline = RadarFramePipeline(api, OkHttpClient(), maxConcurrency = 1, maxRetries = 1, decoder = decoder)
         val fp = RadarViewport.footprintForVisibleBounds(51.0, 52.0, 4.0, 5.0)
-        pipeline.loadForViewport(fp)
+        // Newest (200) succeeds all tiles; oldest fails first tile after retries
+        enqueuePng(fp.tiles.size)
+        server.enqueue(MockResponse().setResponseCode(404))
+        server.enqueue(MockResponse().setResponseCode(404))
 
-        val sess = pipeline.session.value!!
-        val ready = pipeline.playbackFrames()
+        val p = RadarFramePipeline(
+            api, OkHttpClient(), maxConcurrency = 1, maxRetries = 1,
+            decoder = decoder, stitcher = stitcher,
+        )
+        p.loadForViewport(fp)
+
+        val sess = p.session.value!!
+        val ready = p.playbackFrames()
         assertThat(ready).hasSize(1)
         assertThat(ready.single().time).isEqualTo(200L)
         val failed = sess.frames.find { it.time == 100L }
         assertThat(failed?.status).isEqualTo(RadarFrameStatus.FAILED)
         assertThat(failed?.bitmap).isNull()
-        assertThat(ready.none { it.time == 100L }).isTrue()
     }
 
     @Test
@@ -115,18 +128,17 @@ class RadarFramePipelineTest {
             host = host,
             radar = RainViewerRadar(past = frames),
         )
-        enqueuePng()
-        enqueuePng()
-
-        val pipeline = RadarFramePipeline(api, OkHttpClient(), maxConcurrency = 2, decoder = decoder)
         val fp = RadarViewport.footprintForVisibleBounds(51.0, 52.0, 4.0, 5.0)
-        pipeline.loadForViewport(fp)
+        enqueuePng(frames.size * fp.tiles.size)
+
+        val p = pipeline()
+        p.loadForViewport(fp)
         val afterFirst = server.requestCount
 
-        pipeline.loadForViewport(fp)
+        p.loadForViewport(fp)
         assertThat(server.requestCount).isEqualTo(afterFirst)
-        assertThat(pipeline.playbackFrames()).hasSize(2)
-        assertThat(pipeline.session.value?.playable).isTrue()
+        assertThat(p.playbackFrames()).hasSize(2)
+        assertThat(p.session.value?.playable).isTrue()
     }
 
     @Test
@@ -141,10 +153,11 @@ class RadarFramePipelineTest {
             host = host,
             radar = RainViewerRadar(past = frames),
         )
-        repeat(3) { enqueuePng() }
-        val pipeline = RadarFramePipeline(api, OkHttpClient(), decoder = decoder)
-        pipeline.loadForViewport(RadarViewport.footprintForVisibleBounds(51.0, 52.0, 4.0, 5.0))
-        val playable = pipeline.playbackFrames()
+        val fp = RadarViewport.footprintForVisibleBounds(51.0, 52.0, 4.0, 5.0)
+        enqueuePng(frames.size * fp.tiles.size)
+        val p = pipeline()
+        p.loadForViewport(fp)
+        val playable = p.playbackFrames()
         assertThat(playable.map { it.time }).containsExactly(111L, 222L, 333L).inOrder()
     }
 }

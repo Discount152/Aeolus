@@ -316,6 +316,15 @@ fun MapScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    LaunchedEffect(precipMode, mapReady) {
+        if (!mapReady) return@LaunchedEffect
+        activeRadarFootprint = null
+        activeForecastFootprint = null
+        mapView?.getMapAsync { map ->
+            reloadOverlays(map, resumeIfAutoPaused = false)
+        }
+    }
+
     fun locateOnMap() {
         scope.launch {
             val loc = container.locationService.currentLocation()

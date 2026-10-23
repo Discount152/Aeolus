@@ -5,29 +5,36 @@ import org.junit.Test
 
 class RadarImagesTest {
     @Test
-    fun centeredImageUrl_matchesRainViewerCoordinateForm() {
-        val url = RadarImages.centeredImageUrl(
+    fun tileUrl_matchesRainViewerXyzForm() {
+        val url = RadarImages.tileUrl(
             host = "https://tilecache.rainviewer.com",
             path = "/v2/radar/abc",
             zoom = 5,
-            latitude = 52.37000,
-            longitude = 4.89000,
+            x = 16,
+            y = 10,
         )
         assertThat(url).isEqualTo(
-            "https://tilecache.rainviewer.com/v2/radar/abc/512/5/52.37000/4.89000/2/1_1.png",
+            "https://tilecache.rainviewer.com/v2/radar/abc/512/5/16/10/2/1_1.png",
         )
     }
 
     @Test
-    fun centeredImageUrl_clampsZoomToSeven() {
-        val url = RadarImages.centeredImageUrl(
+    fun tileUrl_clampsZoomToSeven() {
+        val url = RadarImages.tileUrl(
             host = "https://tilecache.rainviewer.com",
             path = "v2/radar/x",
             zoom = 12,
-            latitude = 1.0,
-            longitude = 2.0,
+            x = 1,
+            y = 2,
         )
         assertThat(url).contains("/512/7/")
+    }
+
+    @Test
+    fun tileCacheKey_includesZxyAndOptions() {
+        val k = RadarImages.tileCacheKey("/v2/radar/a", 5, 16, 10)
+        assertThat(k).contains("|5|16|10|")
+        assertThat(k).contains("512")
     }
 
     @Test

@@ -1,54 +1,57 @@
-# Aeolus 1.0.4 — Radar Architecture Replacement
+# Aeolus 1.0.5 — Radar Mosaic, Forecast Precip, Timezones, Last-Known-Good
 
 ## Version
 
-- versionName: `1.0.4`
-- versionCode: `5`
-- Prior APKs preserved: `dist/Aeolus-v1.0.0.apk` … `dist/Aeolus-v1.0.3.apk`
+- versionName: `1.0.5`
+- versionCode: `6`
+- Prior APKs preserved: `dist/Aeolus-v1.0.0.apk` … `dist/Aeolus-v1.0.4.apk`
 
-## Architecture replacement
+## Radar
 
-Removed animated XYZ `RasterSource` / `RadarDoubleBuffer` (fixed 320 ms swap, partial tile covers, staging teardown cancels).
+- Architecture: Aeolus downloads RainViewer **512 px XYZ tiles**, stitches a complete mosaic, then displays via MapLibre `ImageSource`/`RasterLayer`. MapLibre never fetches animated radar tiles.
+- Tile budget: **≤ 4 tiles/frame** (`RadarViewport.MAX_TILES_PER_FRAME`); source zoom reduced until cover fits.
+- Padding: ~20% mercator margin for pan reuse.
+- Mosaic: row-major stitch; READY only when every required tile decodes.
+- Cache: per-tile LRU + per-frame mosaic LRU; second playback loop issues no new tile requests.
+- Retry: first attempt + short backoff + second attempt; respect HTTP 429.
+- Expected first-load requests: ~4 × ~13 past frames ≈ **52** (under RainViewer’s 100/min budget).
 
-Replaced with RainViewer **coordinate-centered complete images**:
+## Forecast map
 
-`{host}{path}/512/{z}/{lat}/{lon}/2/1_1.png`
+- Modes: `[ OBSERVED ] [ FORECAST ]` (default OBSERVED).
+- Source: Open-Meteo `v1/forecast` with **`models=best_match`**, batched multi-lat/lon (~12×8 grid) in one request.
+- Horizon: next **24 hourly** frames; local bilinear raster (256×256); legend in user precip units.
+- Clearly labeled as model precip — not radar.
 
-Pipeline:
+## Playback auto-resume
 
-1. Viewport → padded square mercator footprint + zoom (`RadarViewport`)
-2. Newest frame downloaded first → shown via `ImageSource` + `RasterLayer`
-3. Remaining historical frames with bounded concurrency
-4. READY only after full HTTP download + decode
-5. Playback iterates READY bitmaps only; loops do not redownload
-6. Camera idle debounce; reuse set while padded footprint still covers viewport
+- `PLAYING` → camera move → `AUTO_PAUSED_FOR_CAMERA` → camera idle → auto-resume when set ready.
+- `USER_PAUSED` never auto-resumes.
 
-≈ **1 request per timestamp per viewport** (not tiles × frames).
+## Map timezones
 
-## Obsolete pieces removed
+- Modes: VIEWED LOCATION (default), DEVICE, HOME, UTC, CUSTOM.
+- Display: `Instant` → selected `ZoneId`; frame/cache identity unchanged.
+- VIEWED: viewport/location zone (offline approx from longitude when needed).
 
-- `RadarDoubleBuffer.kt` (+ test)
-- XYZ `RadarTiles.tileTemplate` usage / tiled MapOverlayController radar path
-- 320 ms `commitSwap` readiness timer
-- Per-frame RasterSource destroy/recreate animation
+## Offline / last-known-good
 
-## Tests added
+- `LastKnownGoodStore` atomic JSON snapshot (`filesDir/cache/last_known_good.json`, schema v1).
+- Written only after coherent successful live refresh.
+- Cold-start: read LKG first → restore location + Today/Forecast/Models → then connectivity/location resolve.
+- Root cause addressed: per-location cache-key hydrate alone failed when active identity/GPS path diverged after force-stop; LKG embeds location + full bundle independently.
 
-- `RadarViewportTest`
-- `RadarImagesTest`
-- `RadarFramePipelineTest` (newest-first, failed-frame honesty, cache reuse, timeline)
+## Tests / build
 
-## Results
-
-- Unit tests: see test report (all passed)
-- Lint: 0 errors
-- `assembleRelease`: SUCCESS
+- Unit tests: **82 passed**, 0 failures
+- Lint debug: **SUCCESS** (0 errors)
+- `assembleRelease`: **SUCCESS**
 
 ## Runtime
 
-No emulator/adb on Aeolus-PC. Live coordinate URL probed HTTP 200 (512px Universal Blue). Device QA recommended for playback/pan.
+No emulator/adb on Aeolus-PC this run. Manual device QA recommended for mosaic sharpness, forecast overlay, timezone labels, and Airplane Mode → Force Stop → Relaunch.
 
 ## Artifact
 
-- `D:\Project Aeolus\dist\Aeolus-v1.0.4.apk`
-- SHA-256: `1605067b198f681d3a0a5cb3d6f663ef6f66509b3bd54751d932b563a3886d10`
+- `D:\Project Aeolus\dist\Aeolus-v1.0.5.apk`
+- SHA-256: `ef19488e922aecfc3e4fd32438093eef852ede09874984cc928c3701de078017`

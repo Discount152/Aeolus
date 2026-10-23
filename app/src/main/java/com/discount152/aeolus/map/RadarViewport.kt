@@ -1,7 +1,6 @@
 package com.discount152.aeolus.map
 
 import kotlin.math.atan
-import kotlin.math.ceil
 import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.ln

@@ -129,22 +129,21 @@ object DebugWeatherFixtures {
         """.trimIndent()
     }
 
-    fun geocodingBody(): String = """
-        {
-          "results": [
-            {
-              "id": 2755251,
-              "name": "Groningen",
-              "latitude": 53.21917,
-              "longitude": 6.56667,
-              "timezone": "Europe/Amsterdam",
-              "country": "Netherlands",
-              "admin1": "Groningen",
-              "country_code": "NL"
-            }
-          ]
+    fun geocodingBody(query: String = ""): String {
+        val q = query.trim().lowercase()
+        val picked = when {
+            q.contains("side") -> listOf(SIDE)
+            q.contains("groningen") -> listOf(GRONINGEN)
+            q.isBlank() -> listOf(GRONINGEN)
+            else -> listOf(GRONINGEN, SIDE).filter { city ->
+                city.name.lowercase().contains(q) ||
+                    city.admin1.lowercase().contains(q) ||
+                    city.country.lowercase().contains(q)
+            }.ifEmpty { listOf(GRONINGEN) }
         }
-    """.trimIndent()
+        val results = picked.joinToString(",") { it.toJson() }
+        return """{"results":[$results]}"""
+    }
 
     fun emptyBody(): String = "{}"
 
@@ -157,4 +156,50 @@ object DebugWeatherFixtures {
         model.contains("gfs") -> ModelTemps(13.0, 15.0, 8.0)
         else -> ModelTemps(11.0, 13.0, 6.0)
     }
+
+    private data class GeoCity(
+        val id: Int,
+        val name: String,
+        val latitude: Double,
+        val longitude: Double,
+        val timezone: String,
+        val country: String,
+        val admin1: String,
+        val countryCode: String,
+    ) {
+        fun toJson(): String = """
+            {
+              "id": $id,
+              "name": "$name",
+              "latitude": $latitude,
+              "longitude": $longitude,
+              "timezone": "$timezone",
+              "country": "$country",
+              "admin1": "$admin1",
+              "country_code": "$countryCode"
+            }
+        """.trimIndent()
+    }
+
+    private val GRONINGEN = GeoCity(
+        id = 2755251,
+        name = "Groningen",
+        latitude = 53.21917,
+        longitude = 6.56667,
+        timezone = "Europe/Amsterdam",
+        country = "Netherlands",
+        admin1 = "Groningen",
+        countryCode = "NL",
+    )
+
+    private val SIDE = GeoCity(
+        id = 300737,
+        name = "Side",
+        latitude = 36.76667,
+        longitude = 31.38889,
+        timezone = "Europe/Istanbul",
+        country = "Turkey",
+        admin1 = "Antalya",
+        countryCode = "TR",
+    )
 }

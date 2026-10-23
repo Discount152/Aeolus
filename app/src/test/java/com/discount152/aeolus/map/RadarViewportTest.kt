@@ -73,6 +73,26 @@ class RadarViewportTest {
     }
 
     @Test
+    fun worldBounds_areNotUsable_cityBoundsAre() {
+        assertThat(RadarViewport.visibleBoundsUsable(-85.1, 85.1, -180.0, 180.0)).isFalse()
+        assertThat(RadarViewport.visibleBoundsUsable(-119.0, 119.0, -140.0, 140.0)).isFalse()
+        assertThat(RadarViewport.visibleBoundsUsable(52.8, 53.6, 6.2, 7.1)).isTrue()
+    }
+
+    @Test
+    fun coarseWorldMosaic_doesNotCoverCityAtDesiredZoom() {
+        val world = RadarViewport.footprintForVisibleBounds(-80.0, 80.0, -160.0, 160.0)
+        val city = RadarViewport.footprintForVisibleBounds(52.8, 53.6, 6.2, 7.1)
+        assertThat(world.zoom).isLessThan(city.zoom)
+        assertThat(
+            world.coversVisibleAtZoom(52.9, 53.4, 6.4, 6.9, city.zoom),
+        ).isFalse()
+        assertThat(
+            city.coversVisibleAtZoom(52.9, 53.4, 6.4, 6.9, city.zoom),
+        ).isTrue()
+    }
+
+    @Test
     fun tileCover_reducesZoomWhenBudgetExceeded() {
         val wide = RadarViewport.tileCoverForBounds(
             mercatorWest = RadarViewport.lonToMercatorX(-20.0),

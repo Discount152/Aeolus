@@ -57,4 +57,14 @@ object MapCoveredSkip {
 
     fun shouldStartMapForecast(coreGetWeatherInFlight: Boolean, gateCoolingDown: Boolean): Boolean =
         !coreGetWeatherInFlight && !gateCoolingDown
+
+    /**
+     * Tab remount / network reload must not wipe a still-visible clock.
+     * Only blank when there is nothing ready to keep on screen.
+     */
+    fun shouldBlankPublishedTimeline(currentHasReadyFrame: Boolean): Boolean = !currentHasReadyFrame
+
+    /** PREPARING… only when the chrome has no frame to label. */
+    fun showPreparingPlaceholder(hasDisplayedFrame: Boolean, preparing: Boolean): Boolean =
+        preparing && !hasDisplayedFrame
 }

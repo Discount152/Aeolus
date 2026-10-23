@@ -44,3 +44,4 @@ captures/
 # Keep dist checksums tracked optionally; ignore APK binaries in dist
 dist/*.apk
 !dist/SHA256.txt
+dist/qa-*/

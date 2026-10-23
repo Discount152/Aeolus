@@ -17,14 +17,14 @@ import java.time.Instant
 class ForecastPrecipPipelineTest {
 
     @Test
-    fun sampleGrid_defaultViewport_isEighteenByTwelve() {
+    fun sampleGrid_defaultViewport_isTwelveByEight() {
         val points = ForecastPrecipSampling.sampleGrid(
             latSouth = 50.0,
             latNorth = 52.0,
             lonWest = 4.0,
             lonEast = 6.0,
         )
-        assertThat(points).hasSize(18 * 12)
+        assertThat(points).hasSize(12 * 8)
         assertThat(points.first().lat).isWithin(1e-6).of(52.0)
         assertThat(points.first().lon).isWithin(1e-6).of(4.0)
         assertThat(points.last().lat).isWithin(1e-6).of(50.0)
@@ -36,6 +36,14 @@ class ForecastPrecipPipelineTest {
         val (c, r) = ForecastPrecipSampling.adaptiveGridSize(40.0, 60.0, -10.0, 30.0)
         assertThat(c * r).isAtMost(ForecastPrecipPipeline.MAX_SAMPLE_POINTS)
         assertThat(c).isAtLeast(8)
+    }
+
+    @Test
+    fun adaptiveGrid_fitsInTwoBatches() {
+        val (c, r) = ForecastPrecipSampling.adaptiveGridSize(51.0, 53.0, 5.0, 7.0)
+        val batches = (c * r + ForecastPrecipPipeline.MAX_POINTS_PER_BATCH - 1) /
+            ForecastPrecipPipeline.MAX_POINTS_PER_BATCH
+        assertThat(batches).isAtMost(2)
     }
 
     @Test

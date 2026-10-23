@@ -6,27 +6,24 @@ Updated: 2026-10-23
 
 | Item | Value |
 |------|-------|
-| versionName | `1.0.7` |
-| versionCode | `8` |
-| Branch | `cursor/aeolus-1.0.7-repair-36b5` |
-| APK | `dist/Aeolus-v1.0.7.apk` |
-| Prior APKs | v1.0.0–v1.0.6 preserved ✓ |
+| versionName | `1.0.8` |
+| versionCode | `9` |
+| Branch | `cursor/aeolus-1.0.8-repair-36b5` |
+| APK | `dist/Aeolus-v1.0.8.apk` |
+| Prior APKs | v1.0.0–v1.0.7 preserved ✓ |
 
-## 1.0.7 jobs
+## 1.0.8 jobs
 
 | Item | Status |
 |------|--------|
-| Truthful connectivity (STALE vs OFFLINE) | Done |
-| Open-Meteo gate (2) + 429 backoff | Done |
-| LocationGeneration + wrong-location ban | Done |
-| MapGeneration + cancel-safe pipelines | Done |
-| Atomic timeline + selectedInstant + no duplicate NOW | Done |
-| Bottom map chrome | Done |
-| Unit tests | 108 pass |
-| OpenMeteoGate wired in AppContainer | Done |
+| Map-pin diagnose + timezone=auto + ICON-first | Done |
+| Map latency (parallel, fewer batches, non-block TZ) | Done |
+| Playback one-clock 650 ms + auto-resume | Done |
+| Attribution in bottom chrome | Done |
+| Unit tests | 113 pass |
 | assembleRelease | SUCCESS |
-| Physical interactive Map/Today matrix | Pending unlock if keyguard blocks |
+| Physical pin/playback matrix | Partial — provider 429 + keyguard interrupted late session |
 
-## Diagnosis
+## Spec
 
-See store `docs/aeolus-1.0.6-regression-root-cause.md`.
+Store: `internal/aeolus-1.0.8-build-prompt.md`

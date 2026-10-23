@@ -1,66 +1,65 @@
-# Aeolus 1.0.7 — State Integrity, Map Repair, Rate-Limit Hardening, Map UX
+# Aeolus 1.0.8 — Map pin weather, latency, playback, attribution
 
 ## Version
 
-- versionName: `1.0.7`
-- versionCode: `8`
-- APK: `dist/Aeolus-v1.0.7.apk`
-- Prior APKs preserved: v1.0.0–v1.0.6
+- versionName: `1.0.8`
+- versionCode: `9`
+- APK: `dist/Aeolus-v1.0.8.apk`
+- Baseline: 1.0.7 (PR #8)
 
-## Diagnosis basis
+## 1. Map-pin weather — diagnosed root cause
 
-`docs` store report: `aeolus-1.0.6-regression-root-cause.md` (false OFFLINE from stale/429; map cancel stuck preparing; timeline mutation; TopCenter chrome).
+**Demonstrated cause (city OK vs pin UNAVAILABLE):**
 
-## Today / connectivity
+1. Ephemeral map pins have no per-coordinate cache; on live failure UI shows `WEATHER DATA TEMPORARILY UNAVAILABLE` (correct no-cross-location rule from 1.0.7).
+2. Pin selection while Map is active competed with multi-batch Open-Meteo forecast grid (up to ~5×80-point batches) through the shared max-2 gate → 429 / empty models / incoherent reject.
+3. Pin `GeoLocation.timezone` borrowed viewport/`ZoneId.systemDefault()` instead of Open-Meteo `timezone=auto` for WGS84 points.
+4. Device logs under load: `live_fetch_begin … tz=auto ephemeral=true` then `availableModels=0` when provider returns 429.
 
-| State | When |
-|-------|------|
-| LIVE | Validated network + fresh bundle |
-| REFRESHING_WITH_CACHE | Refresh in progress with matching-location cache |
-| STALE_WITH_CACHE | Validated network + stale/error with cache — **not** “OFFLINE” |
-| OFFLINE_WITH_CACHE | **No** validated network + cache |
-| ONLINE_ERROR_NO_CACHE | Validated network + no cache |
-| OFFLINE_NO_CACHE | No network + no cache |
+**Repair:**
 
-Banner copy: offline → `OFFLINE DATA`; stale online → `SHOWING SAVED DATA · LIVE UPDATE UNAVAILABLE`.
+- Pin / ephemeral fetch uses `timezone=auto`; resolved IANA TZ written back from API response.
+- Ephemeral first paint: **ICON only** (no 3-model+ensemble stampede).
+- Map forecast grid reduced to ≤2 batches; pipelines parallel; cancelled gate work releases promptly.
+- Stable `coord:` identity unchanged by later TZ enrichment.
 
-## Open-Meteo coordination
+## 2. Map ~15s latency — profiled bottleneck
 
-- Shared `OpenMeteoGate` on forecast/ensemble/geocoding OkHttp client
-- Max **2** concurrent Open-Meteo HTTP requests
-- HTTP **429**: honor `Retry-After` (capped) + exponential backoff + jitter; ≤2 retries; never maps to OFFLINE
-- Map-pin selection debounce **500 ms**
+| Stage | 1.0.7-ish observation | Fix |
+|-------|----------------------|-----|
+| ViewedTimezone resolve (blocking) | ~9s on 429 retries before overlays | Non-blocking; skip if TZ known |
+| Radar then forecast sequential | Sum of both | `async` parallel |
+| Forecast grid batches | ~3–5 × 80 pts | ≤2 × 100 pts (12×8 default) |
+| Empty covered-skip | gen2 skip with 0 frames | Require radar frames before skip |
+| Early usable | Waited both pipelines | Publish when radar ready |
 
-## LocationGeneration
+Device sample (pre-TZ-fix): `radar_done gen=2 ms=3528` then `timeline_publish … frames=13 playable=true`; full pipelines `17888` ms with TZ 429 ahead of overlays.
 
-- Monotonic generation per authoritative location change
-- Prior `weatherLoadJob` cancelled; results applied only if `locationGen == activeLocationGeneration`
-- UI bundle filtered to **matching** `LocationIdentity.stableId` only
-- Ephemeral map pins: no `findNearest`; failed live never retains another city’s weather
+## 3. Playback 8+ fps — root cause
 
-## Map
+`LaunchedEffect(playback, ready, selectedInstant)` restarted the playback loop on **every** `selectedInstant` update → overlapping advances ≈ multi-fps.
 
-- **MapGeneration** on viewport reload; pipelines take `generation`; `updateFrame` generation-guarded
-- Cancellation clears `preparing` for active gen only; stale gens cannot mutate newer sessions
-- Atomic `publishedTimeline` when both pipelines terminal; early radar preview allowed without scrub reset
-- **selectedInstant** canonical; scrub/playback/source/time derive from it; preserved across publish
-- Duplicate NOW removed (observed preferred; forecast strictly after NOW boundary)
-- Bottom weather chrome; attribution edge; opacity behind Tune dialog; no mid-map control stack
+**Repair:** single `LaunchedEffect(playback)` clock; cadence **650 ms** / NOW **1000 ms** / loop **750 ms**; `USER_PAUSED` vs `AUTO_PAUSED_FOR_CAMERA` with resume on playable active generation only.
 
-## Automated tests
+## 4. Attribution
 
-- `testDebugUnitTest`: **108** tests, **0** failures (including connectivity, timeline NOW dedupe, gate concurrency policy, wrong-location identity/retain)
-- `assembleRelease` + lintVital: success
-- `OpenMeteoGate` interceptor on forecast/ensemble/geocoding + ensemble raw OkHttp; RainViewer ungated
+Removed floating `BottomStart` overlay (`bottom = 118.dp`) that could cover Play.
 
-## Physical device (`57261FDCQ0011Q`)
+Footer inside bottom chrome:
 
-| Check | Result |
-|-------|--------|
-| Install 1.0.7 (versionCode 8) | Pass (rebuilt APK after gate + wrong-location wiring) |
-| Offline-style refresh reject with prior weather | Pass — incoherent live rejected; LKG/same-location cache preserved; wrong-location prior cleared |
-| Interactive Today matrix / Map pan-during-load / playback UI | Attempted; keyguard/`DreamActivity` may block — see final QA evidence |
+`Map © OpenStreetMap/OpenFreeMap · Weather RainViewer/Open-Meteo`
 
-## Preserved 1.0.6 wins
+## 5. Automated tests
 
-Coherent-bundle LKG gate, ICON precip, sky summaries, Today→Forecast expand, timezone modes, radar mosaics, ensemble.
+`testDebugUnitTest`: **113** pass (grid/batch, pin identity, playback cadence, prior suites).
+
+## 6. Physical device notes (`57261FDCQ0011Q`)
+
+- Attribution in chrome + Play content-desc verified when Map UI accessible.
+- MapLoad instrumentation confirms radar-first publish.
+- Open-Meteo **HTTP 429** from shared egress IP blocked live pin/city success later in the session; keyguard/DreamActivity interrupted final interactive matrix.
+- Offline LKG path preserved (1.0.7); fresh install without LKG correctly shows unavailable when all models empty.
+
+## Preserve 1.0.7
+
+Validated connectivity STALE vs OFFLINE, LocationGeneration, OpenMeteoGate, MapGeneration, coherent LKG, selectedInstant, NOW dedupe.

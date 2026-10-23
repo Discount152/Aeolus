@@ -327,18 +327,19 @@ class ForecastPrecipPipeline(
         /** DWD ICON Seamless — one coherent model for the whole map viewport. */
         const val MAP_FORECAST_MODEL = "icon_seamless"
         const val FALLBACK_FORECAST_MODEL = "ecmwf_ifs025"
-        const val DEFAULT_GRID_COLS = 18
-        const val DEFAULT_GRID_ROWS = 12
+        const val DEFAULT_GRID_COLS = 12
+        const val DEFAULT_GRID_ROWS = 8
         const val DEFAULT_RASTER_SIZE_PX = 512
-        const val MAX_SAMPLE_POINTS = 384
-        const val MAX_POINTS_PER_BATCH = 80
+        /** Keep viewport samples low enough for ≤2 Open-Meteo multi-location batches. */
+        const val MAX_SAMPLE_POINTS = 160
+        const val MAX_POINTS_PER_BATCH = 100
     }
 }
 
 object ForecastPrecipSampling {
     /**
-     * Adaptive cols×rows from geographic span. Wider views → ~18×12; closer → denser up to ~24×16,
-     * capped at [ForecastPrecipPipeline.MAX_SAMPLE_POINTS].
+     * Adaptive cols×rows from geographic span. Tuned for ≤2 multi-location HTTP batches
+     * (was ~5×80-point batches → ~15s gate queue + 429s on device).
      */
     fun adaptiveGridSize(
         latSouth: Double,
@@ -353,10 +354,10 @@ object ForecastPrecipSampling {
         val lonSpan = (east - west).coerceAtLeast(0.01)
         val maxSpan = maxOf(latSpan, lonSpan)
         val (cols, rows) = when {
-            maxSpan > 25.0 -> 18 to 12
-            maxSpan > 10.0 -> 20 to 14
-            maxSpan > 4.0 -> 22 to 15
-            else -> 24 to 16
+            maxSpan > 25.0 -> 10 to 7
+            maxSpan > 10.0 -> 12 to 8
+            maxSpan > 4.0 -> 14 to 9
+            else -> 16 to 10
         }
         var c = cols
         var r = rows

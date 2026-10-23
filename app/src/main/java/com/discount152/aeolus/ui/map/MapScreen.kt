@@ -66,7 +66,10 @@ import com.discount152.aeolus.ui.theme.TerminalBackground
 import com.discount152.aeolus.ui.theme.TerminalElevated
 import com.discount152.aeolus.ui.theme.TerminalMuted
 import com.discount152.aeolus.ui.theme.TerminalText
+import android.util.Log
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -90,6 +93,11 @@ private const val MARKER_SOURCE = "aeolus-marker"
 private const val MARKER_LAYER = "aeolus-marker-layer"
 private const val RADAR_IMAGE_SOURCE = "aeolus-radar-image"
 private const val RADAR_IMAGE_LAYER = "aeolus-radar-image-layer"
+private const val MAP_LOAD_TAG = "MapLoad"
+/** Readable weather-animation step (not real-time frame duration). */
+private const val PLAYBACK_FRAME_MS = 650L
+private const val PLAYBACK_NOW_PAUSE_MS = 1000L
+private const val PLAYBACK_LOOP_PAUSE_MS = 750L
 
 @Composable
 fun MapScreen(modifier: Modifier = Modifier) {
@@ -158,25 +166,45 @@ fun MapScreen(modifier: Modifier = Modifier) {
     LaunchedEffect(Unit) { container.settingsRepository.ensureHomeTimezoneInitialized() }
     LaunchedEffect(state.radarOpacity) { overlayOpacity = state.radarOpacity }
 
-    // Atomic publish when both pipelines terminal for current generation.
+    // Publish when radar is ready (degraded OK); upgrade when forecast finishes. Never require both.
     LaunchedEffect(radarSession, forecastSession, mapReady) {
         if (!mapReady) return@LaunchedEffect
         val gen = mapGeneration.get()
-        val r = radarPipeline.session.value
-        val f = forecastPipeline.session.value
-        val rDone = r == null || r.generation != gen || !r.preparing
-        val fDone = f == null || f.generation != gen || !f.preparing
-        if (!rDone || !fDone) return@LaunchedEffect
-        if (gen == publishedGen && publishedTimeline != null) return@LaunchedEffect
+        val r = radarPipeline.session.value?.takeIf { it.generation == gen }
+        val f = forecastPipeline.session.value?.takeIf { it.generation == gen }
+        val rDone = r == null || !r.preparing
+        val fDone = f == null || !f.preparing
+        val observed = if (rDone) radarPipeline.playbackFrames() else emptyList()
+        val forecast = if (fDone) forecastPipeline.playbackFrames() else emptyList()
+        // Radar-first early publish; forecast-only if radar failed; full when both done.
+        val canPublish = when {
+            rDone && observed.isNotEmpty() -> true
+            fDone && forecast.isNotEmpty() && rDone -> true
+            rDone && fDone -> true
+            else -> false
+        }
+        if (!canPublish) return@LaunchedEffect
         val built = UnifiedMapTimeline.build(
-            observed = radarPipeline.playbackFrames(),
-            observedFootprint = r?.takeIf { it.generation == gen }?.footprint,
-            forecast = forecastPipeline.playbackFrames(),
-            forecastFootprint = f?.takeIf { it.generation == gen }?.footprint,
+            observed = observed,
+            observedFootprint = r?.footprint,
+            forecast = forecast,
+            forecastFootprint = f?.footprint,
         )
+        val prev = publishedTimeline
+        if (gen == publishedGen && prev != null &&
+            prev.readyFrames.size == built.readyFrames.size &&
+            prev.readyFrames.map { it.epochSeconds } == built.readyFrames.map { it.epochSeconds }
+        ) {
+            return@LaunchedEffect
+        }
         val prevSelected = selectedInstant
         publishedTimeline = built
         publishedGen = gen
+        Log.i(
+            MAP_LOAD_TAG,
+            "timeline_publish gen=$gen frames=${built.readyFrames.size} " +
+                "radarDone=$rDone forecastDone=$fDone playable=${built.playable}",
+        )
         val nextSelected = when {
             prevSelected != null && built.readyFrames.any { it.epochSeconds == prevSelected } -> prevSelected
             prevSelected != null -> built.nearestFrame(prevSelected)?.epochSeconds
@@ -193,7 +221,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // Early radar preview while waiting for atomic publish (does not mutate timeline).
+    // Early radar bitmap preview before first timeline publish.
     LaunchedEffect(radarSession?.frames, mapReady, publishedTimeline) {
         if (!mapReady || publishedTimeline != null) return@LaunchedEffect
         val newest = radarPipeline.playbackFrames().maxByOrNull { it.time } ?: return@LaunchedEffect
@@ -208,22 +236,52 @@ fun MapScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    LaunchedEffect(playback, ready, selectedInstant) {
+    // ONE playback clock — must NOT key on selectedInstant (that relaunched every frame → 8+ fps).
+    LaunchedEffect(playback) {
         if (playback != MapPlaybackState.PLAYING) return@LaunchedEffect
         while (playback == MapPlaybackState.PLAYING) {
-            val list = publishedTimeline?.readyFrames.orEmpty()
+            val timelineNow = publishedTimeline
+            if (timelineNow == null) {
+                playback = MapPlaybackState.STOPPED
+                return@LaunchedEffect
+            }
+            val list = timelineNow.readyFrames
             if (list.size < 2) {
                 playback = MapPlaybackState.STOPPED
-                break
+                return@LaunchedEffect
             }
             val cur = selectedInstant
             val idx = list.indexOfFirst { it.epochSeconds == cur }.takeIf { it >= 0 } ?: 0
-            val next = list[(idx + 1) % list.size]
+            val nextIdx = (idx + 1) % list.size
+            val next = list[nextIdx]
+            val nowBoundary = timelineNow.nowEpochSeconds
+            val crossingNow = list[idx].epochSeconds <= nowBoundary && next.epochSeconds > nowBoundary
+            val looping = nextIdx == 0
             selectedInstant = next.epochSeconds
             mapView?.getMapAsync { map ->
                 map.style?.let { applyOverlayBitmap(it, next, overlayOpacity) }
             }
-            delay(500)
+            delay(
+                when {
+                    looping -> PLAYBACK_LOOP_PAUSE_MS
+                    crossingNow -> PLAYBACK_NOW_PAUSE_MS
+                    else -> PLAYBACK_FRAME_MS
+                },
+            )
+        }
+    }
+
+    // Auto-resume after camera settle once the active generation is playable.
+    LaunchedEffect(playback, publishedTimeline?.playable, publishedGen) {
+        if (playback != MapPlaybackState.AUTO_PAUSED_FOR_CAMERA) return@LaunchedEffect
+        if (publishedTimeline?.playable != true) return@LaunchedEffect
+        if (publishedGen != mapGeneration.get()) return@LaunchedEffect
+        delay(350)
+        if (playback == MapPlaybackState.AUTO_PAUSED_FOR_CAMERA &&
+            publishedGen == mapGeneration.get() &&
+            publishedTimeline?.playable == true
+        ) {
+            playback = MapPlaybackState.PLAYING
         }
     }
 
@@ -271,13 +329,22 @@ fun MapScreen(modifier: Modifier = Modifier) {
         val centerLat = (b.latitudeSouth + b.latitudeNorth) / 2.0
         val centerLon = RadarViewport.normalizeLon((b.longitudeWest + b.longitudeEast) / 2.0)
         val gen = mapGeneration.incrementAndGet()
+        val t0 = System.currentTimeMillis()
         loadJob?.cancel()
         loadJob = scope.launch {
+            Log.i(MAP_LOAD_TAG, "reload_begin gen=$gen resumeAuto=$resumeIfAutoPaused")
             val online = state.connectivity != ConnectivityPresentation.OFFLINE_WITH_CACHE &&
                 state.connectivity != ConnectivityPresentation.OFFLINE_NO_CACHE
-            tzResolver.resolve(centerLat, centerLon, allowNetwork = online)?.let {
-                viewedZoneId = it.id
-            } ?: state.location?.timezone?.let { viewedZoneId = it }
+            // Never block overlay load on timezone (429 retries were ~9s of the 15s path).
+            if (viewedZoneId == null) {
+                launch {
+                    runCatching {
+                        tzResolver.resolve(centerLat, centerLon, allowNetwork = online)?.let {
+                            if (gen == mapGeneration.get()) viewedZoneId = it.id
+                        }
+                    }
+                }
+            }
 
             if (gen != mapGeneration.get()) return@launch
 
@@ -287,14 +354,17 @@ fun MapScreen(modifier: Modifier = Modifier) {
             val forecastFp = paddedForecastFootprint(
                 b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
             )
-            val radarCovered = activeRadarFootprint?.coversVisible(
+            val radarFramesReady = radarPipeline.playbackFrames().isNotEmpty()
+            val forecastFramesReady = forecastPipeline.playbackFrames().isNotEmpty()
+            val radarGeoCovered = activeRadarFootprint?.coversVisible(
                 b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
             ) == true
-            val forecastCovered = activeForecastFootprint?.coversVisible(
+            val forecastGeoCovered = activeForecastFootprint?.coversVisible(
                 b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
             ) == true
-            if (radarCovered && forecastCovered) {
-                // Viewport still covered — republish existing frames under this generation.
+            // Never treat empty radar as covered (gen=1 empty + gen=2 covered-skip was a bug).
+            val skipNetwork = radarFramesReady && radarGeoCovered && forecastGeoCovered
+            if (skipNetwork) {
                 val built = UnifiedMapTimeline.build(
                     observed = radarPipeline.playbackFrames(),
                     observedFootprint = radarPipeline.session.value?.footprint,
@@ -310,36 +380,48 @@ fun MapScreen(modifier: Modifier = Modifier) {
                             ?.epochSeconds
                             ?: built.readyFrames.lastOrNull()?.epochSeconds
                     }
+                    Log.i(MAP_LOAD_TAG, "reload_covered gen=$gen ms=${System.currentTimeMillis() - t0}")
                 }
             } else {
                 publishedTimeline = null
                 publishedGen = -1L
-                if (!radarCovered) {
-                    activeRadarFootprint = radarFp
-                    radarPipeline.loadForViewport(radarFp, generation = gen)
+                val needRadar = !radarFramesReady || !radarGeoCovered
+                val needForecast = !forecastFramesReady || !forecastGeoCovered
+                // Parallel pipelines — sequential await was a major ~15s contributor.
+                coroutineScope {
+                    val radarDeferred = async {
+                        if (needRadar) {
+                            activeRadarFootprint = radarFp
+                            val tr = System.currentTimeMillis()
+                            radarPipeline.loadForViewport(radarFp, generation = gen)
+                            Log.i(MAP_LOAD_TAG, "radar_done gen=$gen ms=${System.currentTimeMillis() - tr}")
+                        }
+                    }
+                    val forecastDeferred = async {
+                        if (needForecast) {
+                            activeForecastFootprint = forecastFp
+                            val tf = System.currentTimeMillis()
+                            forecastPipeline.loadForViewport(
+                                footprint = forecastFp,
+                                visibleLatSouth = b.latitudeSouth,
+                                visibleLatNorth = b.latitudeNorth,
+                                visibleLonWest = b.longitudeWest,
+                                visibleLonEast = b.longitudeEast,
+                                generation = gen,
+                            )
+                            Log.i(
+                                MAP_LOAD_TAG,
+                                "forecast_done gen=$gen batches=${forecastPipeline.networkBatchCount} " +
+                                    "ms=${System.currentTimeMillis() - tf}",
+                            )
+                        }
+                    }
+                    radarDeferred.await()
+                    forecastDeferred.await()
                 }
-                if (gen != mapGeneration.get()) return@launch
-                if (!forecastCovered) {
-                    activeForecastFootprint = forecastFp
-                    forecastPipeline.loadForViewport(
-                        footprint = forecastFp,
-                        visibleLatSouth = b.latitudeSouth,
-                        visibleLatNorth = b.latitudeNorth,
-                        visibleLonWest = b.longitudeWest,
-                        visibleLonEast = b.longitudeEast,
-                        generation = gen,
-                    )
-                }
+                Log.i(MAP_LOAD_TAG, "reload_pipelines gen=$gen ms=${System.currentTimeMillis() - t0}")
             }
-            if (gen != mapGeneration.get()) return@launch
-            if (resumeIfAutoPaused && playback == MapPlaybackState.AUTO_PAUSED_FOR_CAMERA) {
-                delay(600)
-                if (playback == MapPlaybackState.AUTO_PAUSED_FOR_CAMERA &&
-                    publishedTimeline?.playable == true
-                ) {
-                    playback = MapPlaybackState.PLAYING
-                }
-            }
+            // Auto-resume is handled by LaunchedEffect(playback, playable).
         }
     }
 
@@ -459,13 +541,14 @@ fun MapScreen(modifier: Modifier = Modifier) {
                             mapReady = true
                             state.location?.let { setMarker(style, it.latitude, it.longitude) }
                             map.addOnMapClickListener { latLng ->
+                                // Stable coord identity; timezone=auto in repository — do not borrow viewport TZ.
                                 vm.selectLocation(
                                     GeoLocation(
-                                        id = "map:${latLng.latitude},${latLng.longitude}",
+                                        id = "map:${"%.5f".format(latLng.latitude)},${"%.5f".format(latLng.longitude)}",
                                         name = "Map pin",
                                         latitude = latLng.latitude,
                                         longitude = latLng.longitude,
-                                        timezone = viewedZoneId ?: ZoneId.systemDefault().id,
+                                        timezone = "auto",
                                     ),
                                     saveToList = false,
                                 )
@@ -623,26 +706,13 @@ fun MapScreen(modifier: Modifier = Modifier) {
                 )
             }
             Text(
-                "RainViewer · Open-Meteo / DWD",
+                "Map © OpenStreetMap/OpenFreeMap · Weather RainViewer/Open-Meteo",
                 color = TerminalMuted,
-                fontSize = 9.sp,
+                fontSize = 8.sp,
                 fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(top = 2.dp),
+                modifier = Modifier.padding(top = 4.dp),
             )
         }
-
-        Text(
-            "© OpenFreeMap · © OpenStreetMap contributors · MapLibre",
-            color = TerminalMuted,
-            fontSize = 9.sp,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .navigationBarsPadding()
-                .padding(start = 8.dp, bottom = 118.dp)
-                .background(TerminalBackground.copy(alpha = 0.65f), RoundedCornerShape(4.dp))
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-        )
     }
 }
 

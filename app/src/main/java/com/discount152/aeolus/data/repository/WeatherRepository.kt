@@ -126,7 +126,7 @@ class WeatherRepository(
                 }
             }
             return try {
-                val fresh = fetchLive(stable).copy(location = stable)
+                val fresh = fetchLive(stable)
                 if (!isCoherentLiveBundle(fresh)) {
                     android.util.Log.w(
                         LastKnownGoodStore.TAG,
@@ -206,15 +206,35 @@ class WeatherRepository(
 
     private suspend fun fetchLive(location: GeoLocation): WeatherBundle = coroutineScope {
         val fetchedAt = System.currentTimeMillis()
-        val modelJobs = ForecastModelId.entries.map { model ->
+        // Map pins / ephemeral actives: never block on reverse-geocode or a borrowed viewport TZ.
+        // Open-Meteo accepts WGS84 + timezone=auto for arbitrary land coordinates.
+        val requestTimezone = requestTimezoneFor(location)
+        android.util.Log.i(
+            LastKnownGoodStore.TAG,
+            "live_fetch_begin: locationId=${location.id} lat=${location.latitude} lon=${location.longitude} " +
+                "tz=$requestTimezone ephemeral=${LocationIdentity.isEphemeralActive(location)}",
+        )
+        val resolvedTzHolder = arrayOfNulls<String>(1)
+        // Map pins: one coherent model first (ICON) — avoids 3-model+ensemble stampede vs Map gate.
+        val modelsToFetch = if (LocationIdentity.isEphemeralActive(location)) {
+            listOf(ForecastModelId.ICON)
+        } else {
+            ForecastModelId.entries.toList()
+        }
+        val modelJobs = modelsToFetch.map { model ->
             async(Dispatchers.IO) {
                 runCatching {
                     val resp = forecastApi.forecast(
                         latitude = location.latitude,
                         longitude = location.longitude,
-                        timezone = location.timezone,
+                        timezone = requestTimezone,
                         models = model.apiName,
                     )
+                    resp.timezone?.takeIf { it.isNotBlank() && !it.equals("auto", true) }?.let {
+                        synchronized(resolvedTzHolder) {
+                            if (resolvedTzHolder[0] == null) resolvedTzHolder[0] = it
+                        }
+                    }
                     ForecastMapper.toModelForecast(model, resp, fetchedAt)
                 }.getOrElse {
                     ModelForecast(model = model, available = false, fetchedAtEpochMs = fetchedAt)
@@ -222,12 +242,24 @@ class WeatherRepository(
             }
         }
         val ensembleRawJob = async(Dispatchers.IO) {
-            runCatching { fetchEnsembleRaw(location) }.getOrNull()
+            if (LocationIdentity.isEphemeralActive(location)) {
+                null
+            } else {
+                runCatching { fetchEnsembleRaw(location) }.getOrNull()
+            }
         }
 
-        val models = modelJobs.map { it.await() }
+        val fetchedModels = modelJobs.map { it.await() }
+        // Keep Models tab shape: mark unfetched models unavailable for ephemeral pin first paint.
+        val models = ForecastModelId.entries.map { id ->
+            fetchedModels.firstOrNull { it.model == id }
+                ?: ModelForecast(model = id, available = false, fetchedAtEpochMs = fetchedAt)
+        }
         val ensembleRaw = ensembleRawJob.await()
-        val zone = runCatching { ZoneId.of(location.timezone) }.getOrDefault(ZoneId.of("UTC"))
+        val resolvedTz = resolvedTzHolder[0]
+            ?: location.timezone.takeUnless { it.equals("auto", ignoreCase = true) || it.isBlank() }
+            ?: "UTC"
+        val zone = runCatching { ZoneId.of(resolvedTz) }.getOrDefault(ZoneId.of("UTC"))
         val today = LocalDate.now(zone)
 
         val consensusHourly = ConsensusEngine.buildConsensusHourly(models, 48)
@@ -271,7 +303,7 @@ class WeatherRepository(
         }
 
         WeatherBundle(
-            location = location,
+            location = location.copy(timezone = resolvedTz),
             fetchedAtEpochMs = fetchedAt,
             models = models,
             ensemble = ensembleToday,
@@ -293,7 +325,7 @@ class WeatherRepository(
         val url = "https://ensemble-api.open-meteo.com/v1/ensemble".toHttpUrl().newBuilder()
             .addQueryParameter("latitude", location.latitude.toString())
             .addQueryParameter("longitude", location.longitude.toString())
-            .addQueryParameter("timezone", location.timezone)
+            .addQueryParameter("timezone", requestTimezoneFor(location))
             .addQueryParameter("forecast_days", "15")
             .addQueryParameter("models", "ecmwf_ifs025")
             .addQueryParameter("daily", "temperature_2m_max,precipitation_sum")
@@ -303,6 +335,12 @@ class WeatherRepository(
             if (!resp.isSuccessful) error("ensemble HTTP ${resp.code}")
             resp.body?.string() ?: error("empty ensemble body")
         }
+    }
+
+    /** Open-Meteo request TZ: auto for pins/ephemeral; otherwise location TZ or auto. */
+    private fun requestTimezoneFor(location: GeoLocation): String {
+        if (LocationIdentity.isEphemeralActive(location)) return "auto"
+        return location.timezone.trim().ifBlank { "auto" }
     }
 
     private fun enrichSkySummaries(bundle: WeatherBundle): WeatherBundle {

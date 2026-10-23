@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.discount152.aeolus.data.network.RainViewerApi
 import com.discount152.aeolus.data.network.RainViewerFrame
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -39,6 +40,7 @@ data class RadarSession(
     val footprint: RadarFootprint,
     val frames: List<RadarFrameAsset>,
     val preparing: Boolean,
+    val generation: Long = 0L,
 ) {
     val readyFrames: List<RadarFrameAsset>
         get() = frames.filter { it.status == RadarFrameStatus.READY && it.bitmap != null }
@@ -90,6 +92,9 @@ class RadarFramePipeline(
     private var metadataFrames: List<RainViewerFrame> = emptyList()
     private var metadataAt = 0L
 
+    @Volatile
+    private var activeGeneration: Long = 0L
+
     fun resetNetworkCounters() {
         networkTileFetches = 0
     }
@@ -113,22 +118,35 @@ class RadarFramePipeline(
 
     /**
      * Load mosaic set for [footprint]. Reuses tile/frame caches.
-     * Emits session updates as frames become READY.
+     * Emits session updates as frames become READY. [generation] must match MapGeneration.
      */
-    suspend fun loadForViewport(footprint: RadarFootprint, forceMetadata: Boolean = false) {
+    suspend fun loadForViewport(
+        footprint: RadarFootprint,
+        forceMetadata: Boolean = false,
+        generation: Long = 0L,
+    ) {
+        activeGeneration = generation
         val (host, past) = try {
             ensureMetadata(forceMetadata)
-        } catch (_: Exception) {
-            _session.value = RadarSession(
-                host = "",
-                footprint = footprint,
-                frames = emptyList(),
-                preparing = false,
-            )
+        } catch (e: Exception) {
+            if (e is CancellationException) {
+                discardIfGeneration(generation)
+                throw e
+            }
+            if (generation == activeGeneration) {
+                _session.value = RadarSession(
+                    host = "",
+                    footprint = footprint,
+                    frames = emptyList(),
+                    preparing = false,
+                    generation = generation,
+                )
+            }
             return
         }
+        if (generation != activeGeneration) return
         if (past.isEmpty()) {
-            _session.value = RadarSession(host, footprint, emptyList(), preparing = false)
+            _session.value = RadarSession(host, footprint, emptyList(), preparing = false, generation)
             return
         }
 
@@ -150,25 +168,44 @@ class RadarFramePipeline(
         _session.value = RadarSession(
             host, footprint, initial,
             preparing = initial.any { it.status != RadarFrameStatus.READY },
+            generation = generation,
         )
 
-        val ordered = past.sortedByDescending { it.time }
-        val newest = ordered.first()
-        downloadMosaic(host, newest, footprint)
-        val rest = ordered.drop(1)
-        coroutineScope {
-            val semaphore = Semaphore(maxConcurrency)
-            rest.map { frame ->
-                async(Dispatchers.IO) {
-                    semaphore.withPermit {
-                        downloadMosaic(host, frame, footprint)
+        try {
+            val ordered = past.sortedByDescending { it.time }
+            val newest = ordered.first()
+            downloadMosaic(host, newest, footprint, generation)
+            val rest = ordered.drop(1)
+            coroutineScope {
+                val semaphore = Semaphore(maxConcurrency)
+                rest.map { frame ->
+                    async(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            downloadMosaic(host, frame, footprint, generation)
+                        }
                     }
-                }
-            }.awaitAll()
+                }.awaitAll()
+            }
+            val current = _session.value
+            if (current != null &&
+                current.generation == generation &&
+                generation == activeGeneration &&
+                current.footprint.cacheKeyPart() == footprint.cacheKeyPart()
+            ) {
+                _session.value = current.copy(preparing = false)
+            }
+        } catch (e: CancellationException) {
+            discardIfGeneration(generation)
+            throw e
         }
-        val current = _session.value
-        if (current != null && current.footprint.cacheKeyPart() == footprint.cacheKeyPart()) {
-            _session.value = current.copy(preparing = false)
+    }
+
+    private fun discardIfGeneration(generation: Long) {
+        val cur = _session.value
+        if (cur != null && cur.generation == generation && generation == activeGeneration) {
+            _session.value = cur.copy(preparing = false)
+        } else if (cur != null && cur.generation == generation && generation != activeGeneration) {
+            // Old generation cancelled — do not touch newer session.
         }
     }
 
@@ -177,7 +214,7 @@ class RadarFramePipeline(
         val asset = sess.frames.find { it.time == time } ?: return
         if (asset.status == RadarFrameStatus.READY && asset.bitmap != null) return
         val meta = metadataFrames.find { it.time == time } ?: return
-        downloadMosaic(sess.host, meta, sess.footprint)
+        downloadMosaic(sess.host, meta, sess.footprint, sess.generation)
     }
 
     fun playbackFrames(): List<RadarFrameAsset> =
@@ -191,11 +228,13 @@ class RadarFramePipeline(
         host: String,
         frame: RainViewerFrame,
         footprint: RadarFootprint,
+        generation: Long,
     ) {
+        if (generation != activeGeneration) return
         val frameKey = RadarImages.frameCacheKey(frame.path, footprint)
         mutex.withLock {
             frameCache[frameKey]?.takeIf { !it.isRecycled }?.let { bmp ->
-                updateFrame(frame.time) {
+                updateFrame(frame.time, generation) {
                     it.copy(
                         status = RadarFrameStatus.READY,
                         bitmap = bmp,
@@ -205,7 +244,7 @@ class RadarFramePipeline(
                 return
             }
         }
-        updateFrame(frame.time) {
+        updateFrame(frame.time, generation) {
             it.copy(
                 status = RadarFrameStatus.LOADING,
                 url = mosaicLabel(host, frame.path, footprint),
@@ -214,15 +253,16 @@ class RadarFramePipeline(
 
         val tiles = footprint.tiles
         if (tiles.isEmpty()) {
-            updateFrame(frame.time) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
+            updateFrame(frame.time, generation) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
             return
         }
 
         val decoded = ArrayList<Bitmap>(tiles.size)
         for (tile in tiles) {
+            if (generation != activeGeneration) return
             val bmp = fetchTile(host, frame.path, tile, footprint.tileSizePx)
             if (bmp == null) {
-                updateFrame(frame.time) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
+                updateFrame(frame.time, generation) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
                 return
             }
             decoded.add(bmp)
@@ -232,13 +272,15 @@ class RadarFramePipeline(
             withContext(Dispatchers.Default) {
                 stitcher(footprint, decoded)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
-            updateFrame(frame.time) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
+            updateFrame(frame.time, generation) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
             return
         }
 
         mutex.withLock { putFrameCache(frameKey, mosaic) }
-        updateFrame(frame.time) {
+        updateFrame(frame.time, generation) {
             it.copy(
                 status = RadarFrameStatus.READY,
                 bitmap = mosaic,
@@ -289,8 +331,14 @@ class RadarFramePipeline(
     private fun mosaicLabel(host: String, path: String, footprint: RadarFootprint): String =
         "mosaic:$host$path z${footprint.zoom} ${footprint.tilesX}x${footprint.tilesY}"
 
-    private fun updateFrame(time: Long, transform: (RadarFrameAsset) -> RadarFrameAsset) {
+    private fun updateFrame(
+        time: Long,
+        generation: Long,
+        transform: (RadarFrameAsset) -> RadarFrameAsset,
+    ) {
+        if (generation != activeGeneration) return
         val sess = _session.value ?: return
+        if (sess.generation != generation) return
         val updated = sess.frames.map { if (it.time == time) transform(it) else it }
         val preparing = updated.any {
             it.status == RadarFrameStatus.PENDING || it.status == RadarFrameStatus.LOADING

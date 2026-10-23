@@ -90,11 +90,18 @@ data class UnifiedMapTimeline(
                     )
                 }
             }
+            // NOW boundary = latest observed at/before wall-clock NOW (prefer radar at that Instant).
+            val nowBoundary = frames
+                .filter { it.source == MapFrameSource.OBSERVED_RADAR && it.epochSeconds <= nowEpochSeconds + 120 }
+                .maxByOrNull { it.epochSeconds }
+                ?.epochSeconds
+                ?: nowEpochSeconds
             if (forecastFootprint != null) {
                 for (f in forecast) {
                     if (f.status != ForecastPrecipFrameStatus.READY || f.bitmap == null) continue
                     val sec = f.hourEpochUtcMs / 1000L
-                    if (sec < nowEpochSeconds - 1800) continue // keep near-now and future
+                    // Forecast must begin strictly AFTER the NOW observed Instant — no duplicate NOW.
+                    if (sec <= nowBoundary) continue
                     frames.add(
                         UnifiedMapFrame(
                             epochSeconds = sec,
@@ -109,8 +116,12 @@ data class UnifiedMapTimeline(
                     )
                 }
             }
+            // One frame per Instant; observed already inserted first so it wins ties.
+            val deduped = frames
+                .sortedWith(compareBy({ it.epochSeconds }, { if (it.source == MapFrameSource.OBSERVED_RADAR) 0 else 1 }))
+                .distinctBy { it.epochSeconds }
             return UnifiedMapTimeline(
-                frames = frames.sortedBy { it.epochSeconds },
+                frames = deduped,
                 nowEpochSeconds = nowEpochSeconds,
             )
         }

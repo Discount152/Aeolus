@@ -68,29 +68,28 @@ class WeatherRepository(
 
     fun cachedOrNull(locationId: String): WeatherBundle? = cache.read(locationId)
 
-    fun cachedFor(location: GeoLocation): WeatherBundle? {
-        val key = LocationIdentity.cacheKey(location)
-        return cache.read(key) ?: cache.read(location.id) ?: cache.findNearest(location)
-    }
+    fun cachedFor(location: GeoLocation): WeatherBundle? = readCachedBundle(location)
 
     /**
      * Load disk cache into shared state without network.
      * Always looks up by [LocationIdentity.cacheKey] first (same key used on write).
+     * Ephemeral map pins never inherit a neighbor city's cache via [ForecastCache.findNearest].
      * @param markStale true only when refresh failed or offline — not while a live refresh is pending.
      */
     fun hydrateFromCache(location: GeoLocation, markStale: Boolean = false): WeatherBundle? {
-        val key = LocationIdentity.cacheKey(location)
-        val raw = cache.read(key) ?: cache.read(location.id) ?: cache.findNearest(location)
-        val cached = raw?.let { bundle ->
-            enrichSkySummaries(bundle).copy(
-                location = LocationIdentity.withStableId(bundle.location),
-                fromCache = true,
-                stale = markStale,
-            )
+        val raw = readCachedBundle(location) ?: return null
+        // Only publish cache that belongs to the requested location (or a true nearest for non-ephemeral).
+        val requestedStable = LocationIdentity.stableId(location)
+        val bundleStable = LocationIdentity.stableId(raw.location)
+        if (LocationIdentity.isEphemeralActive(location) && bundleStable != requestedStable) {
+            return null
         }
-        if (cached != null) {
-            _weather.value = cached
-        }
+        val cached = enrichSkySummaries(raw).copy(
+            location = LocationIdentity.withStableId(raw.location),
+            fromCache = true,
+            stale = markStale,
+        )
+        _weather.value = cached
         return cached
     }
 
@@ -117,7 +116,7 @@ class WeatherRepository(
             val stable = LocationIdentity.withStableId(location)
             val key = LocationIdentity.cacheKey(stable)
             if (!forceRefresh) {
-                (cache.read(key) ?: cache.findNearest(stable))?.let { cached ->
+                readCachedBundle(stable)?.let { cached ->
                     val age = System.currentTimeMillis() - cached.fetchedAtEpochMs
                     if (age < 30 * 60_000L) {
                         val tagged = enrichSkySummaries(cached).copy(fromCache = true, stale = false)
@@ -158,25 +157,52 @@ class WeatherRepository(
                     "live_refresh_failed: locationId=${stable.id} key=$key " +
                         "priorWeather=${_weather.value != null} err=${e.message}",
                 )
-                val cached = (cache.read(key) ?: cache.findNearest(stable))?.let { enrichSkySummaries(it) }
+                val cached = readCachedBundle(stable)?.let { enrichSkySummaries(it) }
                     ?.copy(fromCache = true, stale = true)
                 if (cached != null) {
-                    // Never replace valid cache with empty/error state
+                    // Never replace valid same-location cache with empty/error state
                     _weather.value = cached
                     cached
-                } else if (_weather.value != null) {
-                    val kept = enrichSkySummaries(_weather.value!!).copy(fromCache = true, stale = true)
-                    _weather.value = kept
-                    android.util.Log.i(
-                        LastKnownGoodStore.TAG,
-                        "live_refresh_failed: retained_existing_bundle locationId=${kept.location.id}",
-                    )
-                    kept
                 } else {
-                    throw e
+                    // Never retain city A's weather under location B (map pin / new selection).
+                    val prior = _weather.value
+                    val priorMatches = prior != null &&
+                        LocationIdentity.stableId(prior.location) == LocationIdentity.stableId(stable)
+                    if (priorMatches) {
+                        val kept = enrichSkySummaries(prior!!).copy(fromCache = true, stale = true)
+                        _weather.value = kept
+                        android.util.Log.i(
+                            LastKnownGoodStore.TAG,
+                            "live_refresh_failed: retained_same_location_bundle locationId=${kept.location.id}",
+                        )
+                        kept
+                    } else {
+                        if (prior != null) {
+                            android.util.Log.i(
+                                LastKnownGoodStore.TAG,
+                                "live_refresh_failed: cleared_wrong_location_prior " +
+                                    "priorId=${prior.location.id} requestedId=${stable.id}",
+                            )
+                        }
+                        _weather.value = null
+                        throw e
+                    }
                 }
             }
         }
+
+    /**
+     * Exact cache key / id first. [ForecastCache.findNearest] only for non-ephemeral
+     * saved/search locations (GPS id jitter). Map pins and other ephemeral actives never
+     * inherit a neighbor city's forecast.
+     */
+    private fun readCachedBundle(location: GeoLocation): WeatherBundle? {
+        val key = LocationIdentity.cacheKey(location)
+        cache.read(key)?.let { return it }
+        cache.read(location.id)?.let { return it }
+        if (LocationIdentity.isEphemeralActive(location)) return null
+        return cache.findNearest(location)
+    }
 
     private suspend fun fetchLive(location: GeoLocation): WeatherBundle = coroutineScope {
         val fetchedAt = System.currentTimeMillis()

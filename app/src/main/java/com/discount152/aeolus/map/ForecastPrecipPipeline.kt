@@ -3,6 +3,7 @@ package com.discount152.aeolus.map
 import android.graphics.Bitmap
 import com.discount152.aeolus.data.network.OpenMeteoForecastApi
 import com.discount152.aeolus.data.network.OpenMeteoForecastResponse
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +58,7 @@ data class ForecastPrecipSession(
     val footprint: ForecastPrecipFootprint,
     val frames: List<ForecastPrecipFrame>,
     val preparing: Boolean,
+    val generation: Long = 0L,
 ) {
     val readyFrames: List<ForecastPrecipFrame>
         get() = frames.filter { it.status == ForecastPrecipFrameStatus.READY && it.bitmap != null }
@@ -98,6 +100,9 @@ class ForecastPrecipPipeline(
     private val _session = MutableStateFlow<ForecastPrecipSession?>(null)
     val session: StateFlow<ForecastPrecipSession?> = _session.asStateFlow()
 
+    @Volatile
+    private var activeGeneration: Long = 0L
+
     /**
      * Load or refresh forecast precipitation for [footprint]. Skips network when the active session
      * [ForecastPrecipFootprint.coversVisible] the visible bounds and cached frames are still valid.
@@ -109,18 +114,22 @@ class ForecastPrecipPipeline(
         visibleLonWest: Double,
         visibleLonEast: Double,
         forceRefresh: Boolean = false,
+        generation: Long = 0L,
     ) {
+        activeGeneration = generation
         mutex.withLock {
             val current = _session.value
             if (!forceRefresh &&
                 current != null &&
+                current.generation == generation &&
                 current.footprint.coversVisible(
                     visibleLatSouth,
                     visibleLatNorth,
                     visibleLonWest,
                     visibleLonEast,
                 ) &&
-                current.frames.any { it.status == ForecastPrecipFrameStatus.READY }
+                current.frames.any { it.status == ForecastPrecipFrameStatus.READY } &&
+                !current.preparing
             ) {
                 return
             }
@@ -140,8 +149,15 @@ class ForecastPrecipPipeline(
             gridCols,
             gridRows,
         )
+        fun terminalEmpty() {
+            if (generation == activeGeneration) {
+                _session.value = ForecastPrecipSession(
+                    footprint, emptyList(), preparing = false, generation = generation,
+                )
+            }
+        }
         if (samples.isEmpty()) {
-            _session.value = ForecastPrecipSession(footprint, emptyList(), preparing = false)
+            terminalEmpty()
             return
         }
 
@@ -150,25 +166,33 @@ class ForecastPrecipPipeline(
             withContext(Dispatchers.IO) {
                 fetchBatched(samples)
             }
+        } catch (e: CancellationException) {
+            if (generation == activeGeneration) {
+                _session.value = ForecastPrecipSession(
+                    footprint, emptyList(), preparing = false, generation = generation,
+                )
+            }
+            throw e
         } catch (_: Exception) {
-            _session.value = ForecastPrecipSession(footprint, emptyList(), preparing = false)
+            terminalEmpty()
             return
         }
+        if (generation != activeGeneration) return
 
         if (responses.size != samples.size) {
-            _session.value = ForecastPrecipSession(footprint, emptyList(), preparing = false)
+            terminalEmpty()
             return
         }
 
         val referenceTimes = responses.first().hourly?.time.orEmpty()
         if (referenceTimes.isEmpty() || responses.any { it.hourly?.time != referenceTimes }) {
-            _session.value = ForecastPrecipSession(footprint, emptyList(), preparing = false)
+            terminalEmpty()
             return
         }
 
         val hourIndices = ForecastPrecipSampling.indicesForNext24Hours(referenceTimes, nowUtc())
         if (hourIndices.size < 2) {
-            _session.value = ForecastPrecipSession(footprint, emptyList(), preparing = false)
+            terminalEmpty()
             return
         }
 
@@ -180,46 +204,64 @@ class ForecastPrecipPipeline(
                 status = ForecastPrecipFrameStatus.LOADING,
             )
         }
-        _session.value = ForecastPrecipSession(footprint, pendingFrames, preparing = true)
+        if (generation != activeGeneration) return
+        _session.value = ForecastPrecipSession(
+            footprint, pendingFrames, preparing = true, generation = generation,
+        )
 
         val gridValues = buildSampleGridValues(responses)
         val size = footprint.rasterSizePx
 
-        hourIndices.forEachIndexed { frameIndex, hourIdx ->
-            val hourRates = DoubleArray(gridCols * gridRows) { cell ->
-                gridValues[cell][hourIdx].coerceAtLeast(0.0)
-            }
-            val frameMeta = pendingFrames[frameIndex]
-            val cacheKey = frameCacheKey(footprint, frameMeta.hourEpochUtcMs)
+        try {
+            hourIndices.forEachIndexed { frameIndex, hourIdx ->
+                if (generation != activeGeneration) return
+                val hourRates = DoubleArray(gridCols * gridRows) { cell ->
+                    gridValues[cell][hourIdx].coerceAtLeast(0.0)
+                }
+                val frameMeta = pendingFrames[frameIndex]
+                val cacheKey = frameCacheKey(footprint, frameMeta.hourEpochUtcMs)
 
-            val cached = mutex.withLock { frameCache[cacheKey]?.takeIf { !it.isRecycled } }
-            val bitmap = cached ?: withContext(Dispatchers.Default) {
-                val pixels = ForecastPrecipRaster.renderBilinearPixels(
-                    ratesMmPerHour = hourRates,
-                    cols = gridCols,
-                    rows = gridRows,
-                    widthPx = size,
-                    heightPx = size,
-                    latSouth = footprint.latSouth,
-                    latNorth = footprint.latNorth,
-                    lonWest = footprint.lonWest,
-                    lonEast = footprint.lonEast,
-                )
-                rasterEncoder.encode(size, size, pixels)
+                val cached = mutex.withLock { frameCache[cacheKey]?.takeIf { !it.isRecycled } }
+                val bitmap = cached ?: withContext(Dispatchers.Default) {
+                    val pixels = ForecastPrecipRaster.renderBilinearPixels(
+                        ratesMmPerHour = hourRates,
+                        cols = gridCols,
+                        rows = gridRows,
+                        widthPx = size,
+                        heightPx = size,
+                        latSouth = footprint.latSouth,
+                        latNorth = footprint.latNorth,
+                        lonWest = footprint.lonWest,
+                        lonEast = footprint.lonEast,
+                    )
+                    rasterEncoder.encode(size, size, pixels)
+                }
+
+                if (cached == null) {
+                    mutex.withLock { putCache(cacheKey, bitmap) }
+                }
+
+                updateFrame(frameMeta.hourEpochUtcMs, generation) {
+                    it.copy(status = ForecastPrecipFrameStatus.READY, bitmap = bitmap)
+                }
             }
 
-            if (cached == null) {
-                mutex.withLock { putCache(cacheKey, bitmap) }
+            val done = _session.value
+            if (done != null &&
+                done.generation == generation &&
+                generation == activeGeneration &&
+                done.footprint.cacheKeyPart() == footprint.cacheKeyPart()
+            ) {
+                _session.value = done.copy(preparing = false)
             }
-
-            updateFrame(frameMeta.hourEpochUtcMs) {
-                it.copy(status = ForecastPrecipFrameStatus.READY, bitmap = bitmap)
+        } catch (e: CancellationException) {
+            if (generation == activeGeneration) {
+                val cur = _session.value
+                if (cur != null && cur.generation == generation) {
+                    _session.value = cur.copy(preparing = false)
+                }
             }
-        }
-
-        val done = _session.value
-        if (done != null && done.footprint.cacheKeyPart() == footprint.cacheKeyPart()) {
-            _session.value = done.copy(preparing = false)
+            throw e
         }
     }
 
@@ -255,8 +297,14 @@ class ForecastPrecipPipeline(
             resp.hourly?.precipitation?.map { it ?: 0.0 }?.toDoubleArray() ?: doubleArrayOf()
         }
 
-    private fun updateFrame(hourEpochUtcMs: Long, transform: (ForecastPrecipFrame) -> ForecastPrecipFrame) {
+    private fun updateFrame(
+        hourEpochUtcMs: Long,
+        generation: Long,
+        transform: (ForecastPrecipFrame) -> ForecastPrecipFrame,
+    ) {
+        if (generation != activeGeneration) return
         val sess = _session.value ?: return
+        if (sess.generation != generation) return
         val updated = sess.frames.map { if (it.hourEpochUtcMs == hourEpochUtcMs) transform(it) else it }
         val preparing = updated.any {
             it.status == ForecastPrecipFrameStatus.PENDING || it.status == ForecastPrecipFrameStatus.LOADING

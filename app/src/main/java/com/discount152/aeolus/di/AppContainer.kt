@@ -10,6 +10,7 @@ import com.discount152.aeolus.data.cache.ForecastSnapshotStore
 import com.discount152.aeolus.data.cache.LastKnownGoodStore
 import com.discount152.aeolus.data.network.OpenMeteoEnsembleApi
 import com.discount152.aeolus.data.network.OpenMeteoForecastApi
+import com.discount152.aeolus.data.network.OpenMeteoGate
 import com.discount152.aeolus.data.network.OpenMeteoGeocodingApi
 import com.discount152.aeolus.data.network.RainViewerApi
 import com.discount152.aeolus.data.prefs.SettingsRepository
@@ -36,6 +37,10 @@ class AppContainer(context: Context) {
 
     val preferencesDataStore: DataStore<Preferences> = applicationContext.dataStore
 
+    /** Shared Open-Meteo concurrency + 429 backoff (forecast / ensemble / geocoding). */
+    val openMeteoGate: OpenMeteoGate = OpenMeteoGate()
+
+    /** Ungated client for RainViewer and other non–Open-Meteo hosts. */
     val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
@@ -50,26 +55,36 @@ class AppContainer(context: Context) {
         }
         .build()
 
+    /** Open-Meteo HTTP client — max 2 concurrent, Retry-After / backoff on 429. */
+    val openMeteoOkHttpClient: OkHttpClient = okHttpClient.newBuilder()
+        .addInterceptor(openMeteoGate.interceptor())
+        .build()
+
     private val jsonMediaType = "application/json".toMediaType()
 
-    private fun retrofit(baseUrl: String): Retrofit =
+    private fun openMeteoRetrofit(baseUrl: String): Retrofit =
         Retrofit.Builder()
             .baseUrl(baseUrl)
-            .client(okHttpClient)
+            .client(openMeteoOkHttpClient)
             .addConverterFactory(json.asConverterFactory(jsonMediaType))
             .build()
 
     val forecastApi: OpenMeteoForecastApi =
-        retrofit("https://api.open-meteo.com/").create(OpenMeteoForecastApi::class.java)
+        openMeteoRetrofit("https://api.open-meteo.com/").create(OpenMeteoForecastApi::class.java)
 
     val ensembleApi: OpenMeteoEnsembleApi =
-        retrofit("https://ensemble-api.open-meteo.com/").create(OpenMeteoEnsembleApi::class.java)
+        openMeteoRetrofit("https://ensemble-api.open-meteo.com/").create(OpenMeteoEnsembleApi::class.java)
 
     val geocodingApi: OpenMeteoGeocodingApi =
-        retrofit("https://geocoding-api.open-meteo.com/").create(OpenMeteoGeocodingApi::class.java)
+        openMeteoRetrofit("https://geocoding-api.open-meteo.com/").create(OpenMeteoGeocodingApi::class.java)
 
     val rainViewerApi: RainViewerApi =
-        retrofit("https://api.rainviewer.com/").create(RainViewerApi::class.java)
+        Retrofit.Builder()
+            .baseUrl("https://api.rainviewer.com/")
+            .client(okHttpClient)
+            .addConverterFactory(json.asConverterFactory(jsonMediaType))
+            .build()
+            .create(RainViewerApi::class.java)
 
     val forecastCache: ForecastCache = ForecastCache(applicationContext, json)
 
@@ -90,7 +105,7 @@ class AppContainer(context: Context) {
             cache = forecastCache,
             snapshots = forecastSnapshotStore,
             lastKnownGoodStore = lastKnownGoodStore,
-            okHttp = okHttpClient,
+            okHttp = openMeteoOkHttpClient,
             json = json,
         )
 

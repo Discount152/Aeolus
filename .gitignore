@@ -45,3 +45,4 @@ captures/
 dist/*.apk
 !dist/SHA256.txt
 dist/qa-*/
+qa-device/

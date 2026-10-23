@@ -44,7 +44,7 @@ class ConnectivityPresentationTest {
     }
 
     @Test
-    fun refreshFailedWithCache_onlineNetwork_isStaleWithCache() {
+    fun validatedNetwork_staleBundle_isStaleNotOffline() {
         val stale = bundle.copy(fromCache = true, stale = true)
         val presentation = computeConnectivityPresentation(
             loading = false,
@@ -58,24 +58,23 @@ class ConnectivityPresentationTest {
     }
 
     @Test
-    fun refreshFailedWithCache_offlineNetwork_isOfflineWithCache() {
-        val stale = bundle.copy(fromCache = true, stale = true)
+    fun noNetwork_withCache_isOfflineWithCache() {
         val presentation = computeConnectivityPresentation(
             loading = false,
             refreshing = false,
-            error = "Showing cached forecast (refresh failed).",
-            bundle = stale,
+            error = null,
+            bundle = bundle.copy(stale = true),
             networkValidated = false,
         )
         assertThat(presentation).isEqualTo(ConnectivityPresentation.OFFLINE_WITH_CACHE)
     }
 
     @Test
-    fun noDataAndError_validatedNetwork_isOnlineErrorNoCache() {
+    fun validatedNetwork_noCache_providerFailure_isOnlineError() {
         val presentation = computeConnectivityPresentation(
             loading = false,
             refreshing = false,
-            error = "Unable to load forecast. Check connection and retry.",
+            error = "WEATHER DATA TEMPORARILY UNAVAILABLE",
             bundle = null,
             networkValidated = true,
         )
@@ -83,11 +82,11 @@ class ConnectivityPresentationTest {
     }
 
     @Test
-    fun noData_noValidatedNetwork_isOfflineNoCache() {
+    fun noNetwork_noCache_isOfflineNoCache() {
         val presentation = computeConnectivityPresentation(
             loading = false,
             refreshing = false,
-            error = "Unable to load forecast. Check connection and retry.",
+            error = null,
             bundle = null,
             networkValidated = false,
         )
@@ -95,14 +94,14 @@ class ConnectivityPresentationTest {
     }
 
     @Test
-    fun loadingNoBundle_validatedNetwork_staysLiveForLoadingUi() {
+    fun http429StyleError_neverMapsToOfflineWhenValidated() {
         val presentation = computeConnectivityPresentation(
-            loading = true,
+            loading = false,
             refreshing = false,
-            error = null,
-            bundle = null,
+            error = "rate limited",
+            bundle = bundle.copy(stale = true),
             networkValidated = true,
         )
-        assertThat(presentation).isEqualTo(ConnectivityPresentation.LIVE)
+        assertThat(presentation).isEqualTo(ConnectivityPresentation.STALE_WITH_CACHE)
     }
 }

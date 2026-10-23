@@ -6,29 +6,27 @@ Updated: 2026-10-23
 
 | Item | Value |
 |------|-------|
-| versionName | `1.0.6` |
-| versionCode | `7` |
-| Branch | `cursor/aeolus-1.0.6-full-build-36b5` |
-| APK | `dist/Aeolus-v1.0.6.apk` |
-| Prior APKs | v1.0.0–v1.0.5 preserved ✓ |
+| versionName | `1.0.7` |
+| versionCode | `8` |
+| Branch | `cursor/aeolus-1.0.7-repair-36b5` |
+| APK | `dist/Aeolus-v1.0.7.apk` |
+| Prior APKs | v1.0.0–v1.0.6 preserved ✓ |
 
-## 1.0.6 jobs
+## 1.0.7 jobs
 
 | Item | Status |
 |------|--------|
-| Unified map timeline | Done |
-| ICON precip + dry mask | Done |
-| Local clock timezone UX | Done |
-| Daily Sky field | Done |
-| Today→Forecast expand | Done |
-| Real-device offline cold-start | **PASS** on `57261FDCQ0011Q` (Pixel 10 Pro XL) |
+| Truthful connectivity (STALE vs OFFLINE) | Done |
+| Open-Meteo gate (2) + 429 backoff | Done |
+| LocationGeneration + wrong-location ban | Done |
+| MapGeneration + cancel-safe pipelines | Done |
+| Atomic timeline + selectedInstant + no duplicate NOW | Done |
+| Bottom map chrome | Done |
+| Unit tests | 108 pass |
+| OpenMeteoGate wired in AppContainer | Done |
+| assembleRelease | SUCCESS |
+| Physical interactive Map/Today matrix | Pending unlock if keyguard blocks |
 
-## Offline root cause
+## Diagnosis
 
-Class **E**: empty offline “live refresh” overwrote LKG. Fixed via coherent-bundle gate.
-
-## QA
-
-- Unit tests: green (incl. coherent-bundle)
-- assembleRelease: SUCCESS
-- Physical offline + reconnect: PASS
+See store `docs/aeolus-1.0.6-regression-root-cause.md`.

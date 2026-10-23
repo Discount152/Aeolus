@@ -11,11 +11,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.discount152.aeolus.AeolusApp
+import com.discount152.aeolus.data.network.MAP_PIN_DEBOUNCE_MS
 import com.discount152.aeolus.di.AppContainer
 import com.discount152.aeolus.domain.models.GeoLocation
 import com.discount152.aeolus.domain.models.WeatherBundle
 import com.discount152.aeolus.domain.units.UnitPreferences
 import com.discount152.aeolus.location.LocationIdentity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -31,6 +33,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicInteger
 
 data class WeatherUiState(
     val loading: Boolean = true,
@@ -105,13 +108,19 @@ class WeatherViewModel(
         container.weatherRepository.weather,
         _networkValidated,
     ) { meta, bundle, networkValidated ->
-        val loc = meta.location ?: bundle?.location
+        val loc = meta.location
+        // Never present weather for a different location under the active pin/search name.
+        val matching = bundle?.takeIf { b ->
+            loc != null &&
+                LocationIdentity.stableId(b.location) == LocationIdentity.stableId(loc)
+        }
+        val displayLoc = loc ?: matching?.location
         WeatherUiState(
             loading = meta.loading,
             refreshing = meta.refreshing,
             error = meta.error,
-            bundle = bundle,
-            location = loc,
+            bundle = matching,
+            location = displayLoc,
             units = meta.units,
             radarOpacity = meta.radarOpacity,
             savedLocations = meta.savedLocations,
@@ -121,11 +130,11 @@ class WeatherViewModel(
                 loading = meta.loading,
                 refreshing = meta.refreshing,
                 error = meta.error,
-                bundle = bundle,
+                bundle = matching,
                 networkValidated = networkValidated,
             ),
-            locationIsSaved = loc != null && meta.savedLocations.any {
-                LocationIdentity.stableId(it) == LocationIdentity.stableId(loc)
+            locationIsSaved = displayLoc != null && meta.savedLocations.any {
+                LocationIdentity.stableId(it) == LocationIdentity.stableId(displayLoc)
             },
             awaitingLocationPermission = meta.awaitingLocationPermission,
         )
@@ -136,7 +145,12 @@ class WeatherViewModel(
     )
 
     private var refreshJob: Job? = null
+    private var weatherLoadJob: Job? = null
+    private var pinDebounceJob: Job? = null
     private var permissionResolved = false
+    private val locationGeneration = AtomicInteger(0)
+    @Volatile
+    private var activeLocationGeneration: Int = 0
 
     init {
         connectivityManager.registerDefaultNetworkCallback(networkCallback)
@@ -266,19 +280,36 @@ class WeatherViewModel(
 
     /**
      * Set the active viewing location. Does NOT add to Saved Locations unless [saveToList].
+     * Map pins are debounced (~500 ms) to avoid Open-Meteo stampedes.
      */
     fun selectLocation(
         location: GeoLocation,
         saveToList: Boolean = false,
         forceNetwork: Boolean = true,
     ) {
-        viewModelScope.launch {
-            applyActiveLocation(
-                location = location,
-                persistActive = true,
-                saveToList = saveToList,
-                forceNetwork = forceNetwork,
-            )
+        val isMapPin = LocationIdentity.normalizeName(location.name) == "map pin" ||
+            location.id.startsWith("map:", ignoreCase = true)
+        if (isMapPin) {
+            pinDebounceJob?.cancel()
+            pinDebounceJob = viewModelScope.launch {
+                delay(MAP_PIN_DEBOUNCE_MS)
+                applyActiveLocation(
+                    location = location,
+                    persistActive = true,
+                    saveToList = saveToList,
+                    forceNetwork = forceNetwork,
+                )
+            }
+        } else {
+            pinDebounceJob?.cancel()
+            viewModelScope.launch {
+                applyActiveLocation(
+                    location = location,
+                    persistActive = true,
+                    saveToList = saveToList,
+                    forceNetwork = forceNetwork,
+                )
+            }
         }
     }
 
@@ -306,11 +337,23 @@ class WeatherViewModel(
         saveToList: Boolean,
         forceNetwork: Boolean,
     ) {
+        val gen = locationGeneration.incrementAndGet()
+        activeLocationGeneration = gen
+        weatherLoadJob?.cancel()
+
         val fromDevice = location.id.startsWith("device:", ignoreCase = true) ||
             location.id.startsWith("coord:", ignoreCase = true) ||
             LocationIdentity.normalizeName(location.name) == "current location"
         val canonical = LocationIdentity.withStableId(location)
-        _meta.update { it.copy(location = canonical, error = null, awaitingLocationPermission = false) }
+        _meta.update {
+            it.copy(
+                location = canonical,
+                error = null,
+                awaitingLocationPermission = false,
+                loading = true,
+                refreshing = false,
+            )
+        }
 
         if (persistActive) {
             container.settingsRepository.setActiveLocation(canonical)
@@ -321,15 +364,28 @@ class WeatherViewModel(
             container.settingsRepository.setSavedLocations(updated)
         }
 
+        if (gen != activeLocationGeneration) return
+
         val cached = container.weatherRepository.hydrateFromCache(canonical)
+        if (gen != activeLocationGeneration) return
         if (cached != null) {
             _meta.update { it.copy(loading = false) }
+        } else {
+            container.weatherRepository.clearIfNotMatching(canonical)
+            _meta.update { it.copy(loading = true) }
         }
-        loadWeather(force = forceNetwork)
+        weatherLoadJob = viewModelScope.launch {
+            loadWeather(force = forceNetwork, locationGen = gen)
+        }
+        weatherLoadJob?.join()
     }
 
     fun refresh(silent: Boolean = false) {
-        viewModelScope.launch { loadWeather(force = true, silent = silent) }
+        val gen = activeLocationGeneration
+        weatherLoadJob?.cancel()
+        weatherLoadJob = viewModelScope.launch {
+            loadWeather(force = true, silent = silent, locationGen = gen)
+        }
     }
 
     fun search(query: String) {
@@ -405,40 +461,50 @@ class WeatherViewModel(
         }
     }
 
-    private suspend fun loadWeather(force: Boolean, silent: Boolean = false) {
+    private suspend fun loadWeather(
+        force: Boolean,
+        silent: Boolean = false,
+        locationGen: Int = activeLocationGeneration,
+    ) {
         val location = _meta.value.location ?: return
+        if (locationGen != activeLocationGeneration) return
+
+        val sameLocBundle = container.weatherRepository.weather.value?.takeIf {
+            LocationIdentity.stableId(it.location) == LocationIdentity.stableId(location)
+        }
         _meta.update {
             it.copy(
-                loading = container.weatherRepository.weather.value == null && !silent && it.loading,
-                refreshing = silent || container.weatherRepository.weather.value != null,
+                loading = sameLocBundle == null && !silent,
+                refreshing = silent || sameLocBundle != null,
                 error = null,
             )
         }
-        if (container.weatherRepository.weather.value != null) {
-            _meta.update { it.copy(loading = false, refreshing = true) }
-        }
 
-        val priorBundle = container.weatherRepository.weather.value
-        runCatching {
-            container.weatherRepository.getWeather(location, forceRefresh = force)
-        }.onSuccess {
+        try {
+            val result = container.weatherRepository.getWeather(location, forceRefresh = force)
+            if (locationGen != activeLocationGeneration) return
+            if (LocationIdentity.stableId(result.location) != LocationIdentity.stableId(location)) {
+                return
+            }
             _meta.update { it.copy(loading = false, refreshing = false, error = null) }
-        }.onFailure {
-            val cached = container.weatherRepository.cachedFor(location)
-                ?: container.weatherRepository.weather.value
-                ?: priorBundle
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (locationGen != activeLocationGeneration) return
+            val cached = container.weatherRepository.cachedFor(location)?.takeIf {
+                LocationIdentity.stableId(it.location) == LocationIdentity.stableId(location)
+            }
             if (cached != null) {
-                val fromDisk = container.weatherRepository.hydrateFromCache(location, markStale = true)
-                if (fromDisk == null) {
-                    container.weatherRepository.publishBootSnapshot(cached)
-                }
+                container.weatherRepository.hydrateFromCache(location, markStale = true)
+            } else {
+                container.weatherRepository.clearIfNotMatching(location)
             }
             _meta.update {
                 it.copy(
                     loading = false,
                     refreshing = false,
                     error = if (cached == null) {
-                        "Unable to load forecast. Check connection and retry."
+                        "WEATHER DATA TEMPORARILY UNAVAILABLE"
                     } else {
                         "Showing cached forecast (refresh failed)."
                     },

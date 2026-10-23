@@ -79,4 +79,41 @@ class UnifiedMapTimelineTest {
         )
         assertThat(a.readyFrames.map { it.epochSeconds }).isEqualTo(b.readyFrames.map { it.epochSeconds })
     }
+
+    @Test
+    fun duplicateNow_prefersObserved_forecastStartsAfter() {
+        val now = 1_700_000_000L
+        val timeline = UnifiedMapTimeline.build(
+            observed = listOf(obs(now - 600), obs(now)),
+            observedFootprint = obsFp,
+            forecast = listOf(fc(now * 1000), fc((now + 3600) * 1000)),
+            forecastFootprint = fcFp,
+            nowEpochSeconds = now,
+        )
+        val atNow = timeline.readyFrames.filter { it.epochSeconds == now }
+        assertThat(atNow).hasSize(1)
+        assertThat(atNow.single().source).isEqualTo(MapFrameSource.OBSERVED_RADAR)
+        assertThat(timeline.readyFrames.none { it.source == MapFrameSource.FORECAST_PRECIP && it.epochSeconds <= now })
+            .isTrue()
+        assertThat(timeline.readyFrames.map { it.epochSeconds }.distinct().size)
+            .isEqualTo(timeline.readyFrames.size)
+    }
+
+    @Test
+    fun selectedInstant_nearestSurvivesRebuild() {
+        val now = 1_000_000L
+        val small = UnifiedMapTimeline.build(
+            listOf(obs(now - 600), obs(now)), obsFp, emptyList(), null, now,
+        )
+        val selected = now - 600
+        val larger = UnifiedMapTimeline.build(
+            listOf(obs(now - 1200), obs(now - 600), obs(now)),
+            obsFp,
+            listOf(fc((now + 3600) * 1000)),
+            fcFp,
+            now,
+        )
+        val nearest = larger.nearestFrame(selected)
+        assertThat(nearest?.epochSeconds).isEqualTo(selected)
+    }
 }

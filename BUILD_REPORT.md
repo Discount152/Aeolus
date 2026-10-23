@@ -1,103 +1,66 @@
-# Aeolus 1.0.6 — Unified Map, Forecast UX, Offline Cold-Start Fix
+# Aeolus 1.0.7 — State Integrity, Map Repair, Rate-Limit Hardening, Map UX
 
 ## Version
 
-- versionName: `1.0.6`
-- versionCode: `7`
-- Prior APKs preserved: v1.0.0–v1.0.5
+- versionName: `1.0.7`
+- versionCode: `8`
+- APK: `dist/Aeolus-v1.0.7.apk`
+- Prior APKs preserved: v1.0.0–v1.0.6
 
-## Unified Map
+## Diagnosis basis
 
-- Removed OBSERVED / FORECAST tabs.
-- One timeline: past RainViewer (~10 min) → NOW → ICON Seamless hourly forecast (24h).
-- Scrub/playback by absolute timestamps; source label on current frame (`OBSERVED · RainViewer` / `FORECAST · ICON`).
-- Observed mosaic architecture unchanged (≤4 tiles/frame, READY-only ImageSource).
+`docs` store report: `aeolus-1.0.6-regression-root-cause.md` (false OFFLINE from stale/429; map cancel stuck preparing; timeline mutation; TopCenter chrome).
 
-## Forecast precipitation renderer
+## Today / connectivity
 
-- Model: Open-Meteo **`icon_seamless`** (coherent viewport; not best_match).
-- Adaptive sample grid (~18×12 … 24×16, cap 384), batched multi-location requests.
-- Rate bilinear interpolation then dry mask `< 0.1 mm/h` → transparent.
-- Blue/cyan intensity scale; 512×512 rasters; no debug mosaic/tile strings in UI.
+| State | When |
+|-------|------|
+| LIVE | Validated network + fresh bundle |
+| REFRESHING_WITH_CACHE | Refresh in progress with matching-location cache |
+| STALE_WITH_CACHE | Validated network + stale/error with cache — **not** “OFFLINE” |
+| OFFLINE_WITH_CACHE | **No** validated network + cache |
+| ONLINE_ERROR_NO_CACHE | Validated network + no cache |
+| OFFLINE_NO_CACHE | No network + no cache |
 
-## Timezones
+Banner copy: offline → `OFFLINE DATA`; stale online → `SHOWING SAVED DATA · LIVE UPDATE UNAVAILABLE`.
 
-- Wall-clock primary labels (`18:40 TRT`), not `UTC+3` arithmetic.
-- VIEWED resolves IANA via Open-Meteo `timezone=auto` with spatial cache; offline uses last known / device — no longitude invention.
-- Midnight crossing appends date context.
+## Open-Meteo coordination
 
-## Daily Forecast
+- Shared `OpenMeteoGate` on forecast/ensemble/geocoding OkHttp client
+- Max **2** concurrent Open-Meteo HTTP requests
+- HTTP **429**: honor `Retry-After` (capped) + exponential backoff + jitter; ≤2 retries; never maps to OFFLINE
+- Map-pin selection debounce **500 ms**
 
-- `SkyCondition` daylight cloud-cover categories on Forecast cards.
-- Today daily card tap → Forecast route + auto-expand matching date.
+## LocationGeneration
 
-## Offline cold-start — physical device evidence
+- Monotonic generation per authoritative location change
+- Prior `weatherLoadJob` cancelled; results applied only if `locationGen == activeLocationGeneration`
+- UI bundle filtered to **matching** `LocationIdentity.stableId` only
+- Ephemeral map pins: no `findNearest`; failed live never retains another city’s weather
 
-### Device
+## Map
 
-| Field | Value |
+- **MapGeneration** on viewport reload; pipelines take `generation`; `updateFrame` generation-guarded
+- Cancellation clears `preparing` for active gen only; stale gens cannot mutate newer sessions
+- Atomic `publishedTimeline` when both pipelines terminal; early radar preview allowed without scrub reset
+- **selectedInstant** canonical; scrub/playback/source/time derive from it; preserved across publish
+- Duplicate NOW removed (observed preferred; forecast strictly after NOW boundary)
+- Bottom weather chrome; attribution edge; opacity behind Tune dialog; no mid-map control stack
+
+## Automated tests
+
+- `testDebugUnitTest`: **108** tests, **0** failures (including connectivity, timeline NOW dedupe, gate concurrency policy, wrong-location identity/retain)
+- `assembleRelease` + lintVital: success
+- `OpenMeteoGate` interceptor on forecast/ensemble/geocoding + ensemble raw OkHttp; RainViewer ungated
+
+## Physical device (`57261FDCQ0011Q`)
+
+| Check | Result |
 |-------|--------|
-| Serial | `57261FDCQ0011Q` |
-| Model | Pixel 10 Pro XL (`mustang`) |
-| Android | 17 |
-| ADB state | `device` |
+| Install 1.0.7 (versionCode 8) | Pass (rebuilt APK after gate + wrong-location wiring) |
+| Offline-style refresh reject with prior weather | Pass — incoherent live rejected; LKG/same-location cache preserved; wrong-location prior cleared |
+| Interactive Today matrix / Map pan-during-load / playback UI | Attempted; keyguard/`DreamActivity` may block — see final QA evidence |
 
-### Pre-fix reproduction (bug)
+## Preserved 1.0.6 wins
 
-1. Installed `dist/Aeolus-v1.0.6.apk` with `-r` (data preserved) over 1.0.5.
-2. Online launch → LKG write_success **430574** bytes (`daily=16 hourly=48`).
-3. `am force-stop` → disabled wifi/data/airplane → Active default network: **none**.
-4. Relaunch offline logcat:
-
-```
-startup_read: decode_ok ... daily=16 hourly=48 ensemble=true
-bootstrap: lkg_hydrated ... bundleDaily=16 weatherFlow=true
-write_success: bytes=893 ... daily=0 hourly=0   ← DESTROYED GOOD SNAPSHOT
-live_refresh: wrote_lkg=true ... daily=0 hourly=0
-```
-
-5. UI blank except local time (`Feels -`, `-%`, no temps).
-
-### Root cause class
-
-**E — Hydration succeeds but another startup state overwrites it.**
-
-Specifically: offline `fetchLive` returned an “empty success” (all models unavailable → empty consensus) without throwing. `getWeather` treated that as a successful live refresh and **atomically overwrote** last-known-good with an 893-byte hollow bundle, then UI bound to the empty state.
-
-### Fix
-
-- `WeatherRepository.isCoherentLiveBundle`: require ≥1 available model with data + non-empty consensus daily/hourly.
-- Incoherent live results throw into the existing failure path → retain prior `_weather` / cache; **do not** write LKG.
-- `LastKnownGoodStore.write` refuses incoherent bundles (defense in depth).
-
-### Post-fix acceptance (same serial)
-
-Offline relaunch after fix:
-
-```
-decode_ok ... daily=16 hourly=48 ensemble=true
-lkg_hydrated ... weatherFlow=true
-live_refresh_rejected_incoherent: daily=0 hourly=0 availableModels=0 priorWeather=true
-live_refresh_failed: ... retained path
-```
-
-UI hierarchy (uiautomator):
-
-- Today: `OFFLINE DATA`, `7°C`, confidence `96% · HIGH`, precip `7.1 mm`, hourly strip populated
-- Forecast: 15-day + hourly temps populated
-- Models: ECMWF/ICON/GFS + ensemble members + confidence preserved
-- LKG file size remained **429496** (not shrunk)
-
-Reconnect: network restored → `live_refresh: wrote_lkg=true daily=16 hourly=48`; OFFLINE banner cleared; temps remain.
-
-Evidence artifacts under `dist/qa-1.0.6-offline/` (screenshots + XML + logcat).
-
-## Tests / build
-
-- Unit tests: include `CoherentLiveBundleTest` — full suite green after fix
-- assembleRelease: SUCCESS (rebuilt after fix)
-
-## Artifact
-
-- `D:\Project Aeolus\dist\Aeolus-v1.0.6.apk`
-- SHA-256: `2f97a926b9356996722c23190a4481136559b94dce36f0e31fc89d89fdb1d258`
+Coherent-bundle LKG gate, ICON precip, sky summaries, Today→Forecast expand, timezone modes, radar mosaics, ensemble.

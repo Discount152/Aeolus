@@ -21,6 +21,9 @@ class OpenMeteoGate(
 
     val maxConcurrent: Int = maxConcurrent
 
+    fun isCoolingDown(nowMs: Long = System.currentTimeMillis()): Boolean =
+        nowMs < cooldownUntilMs.get()
+
     fun noteRateLimited(retryAfterSeconds: Long?) {
         val waitMs = when {
             retryAfterSeconds != null && retryAfterSeconds in 1..120 -> retryAfterSeconds * 1000L

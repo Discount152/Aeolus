@@ -47,6 +47,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.discount152.aeolus.domain.models.GeoLocation
 import com.discount152.aeolus.map.ForecastPrecipFootprint
 import com.discount152.aeolus.map.ForecastPrecipPipeline
+import com.discount152.aeolus.map.MapCoveredSkip
 import com.discount152.aeolus.map.MapFrameSource
 import com.discount152.aeolus.map.MapPlaybackState
 import com.discount152.aeolus.map.MapTimezone
@@ -59,6 +60,7 @@ import com.discount152.aeolus.map.UnifiedMapFrame
 import com.discount152.aeolus.map.UnifiedMapTimeline
 import com.discount152.aeolus.map.ViewedTimezoneResolver
 import com.discount152.aeolus.ui.state.ConnectivityPresentation
+import com.discount152.aeolus.ui.state.WeatherCopy
 import com.discount152.aeolus.ui.state.aeolusContainer
 import com.discount152.aeolus.ui.state.rememberWeatherViewModel
 import com.discount152.aeolus.ui.theme.PhosphorGreen
@@ -176,20 +178,22 @@ fun MapScreen(modifier: Modifier = Modifier) {
         val fDone = f == null || !f.preparing
         val observed = if (rDone) radarPipeline.playbackFrames() else emptyList()
         val forecast = if (fDone) forecastPipeline.playbackFrames() else emptyList()
-        // Radar-first early publish; forecast-only if radar failed; full when both done.
-        val canPublish = when {
-            rDone && observed.isNotEmpty() -> true
-            fDone && forecast.isNotEmpty() && rDone -> true
-            rDone && fDone -> true
-            else -> false
-        }
-        if (!canPublish) return@LaunchedEffect
         val built = UnifiedMapTimeline.build(
             observed = observed,
             observedFootprint = r?.footprint,
             forecast = forecast,
             forecastFootprint = f?.footprint,
         )
+        // Radar-first early publish; never settle an empty/unplayable unified timeline.
+        val canPublish = MapCoveredSkip.canPublishSettle(
+            radarDone = rDone,
+            forecastDone = fDone,
+            observedReadyCount = observed.size,
+            forecastReadyCount = forecast.size,
+            unifiedPlayable = built.playable,
+            unifiedReadyCount = built.readyFrames.size,
+        )
+        if (!canPublish) return@LaunchedEffect
         val prev = publishedTimeline
         if (gen == publishedGen && prev != null &&
             prev.readyFrames.size == built.readyFrames.size &&
@@ -362,15 +366,21 @@ fun MapScreen(modifier: Modifier = Modifier) {
             val forecastGeoCovered = activeForecastFootprint?.coversVisible(
                 b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
             ) == true
-            // Never treat empty radar as covered (gen=1 empty + gen=2 covered-skip was a bug).
-            val skipNetwork = radarFramesReady && radarGeoCovered && forecastGeoCovered
-            if (skipNetwork) {
-                val built = UnifiedMapTimeline.build(
-                    observed = radarPipeline.playbackFrames(),
-                    observedFootprint = radarPipeline.session.value?.footprint,
-                    forecast = forecastPipeline.playbackFrames(),
-                    forecastFootprint = forecastPipeline.session.value?.footprint,
-                )
+            val built = UnifiedMapTimeline.build(
+                observed = radarPipeline.playbackFrames(),
+                observedFootprint = radarPipeline.session.value?.footprint,
+                forecast = forecastPipeline.playbackFrames(),
+                forecastFootprint = forecastPipeline.session.value?.footprint,
+            )
+            val decision = MapCoveredSkip.reloadDecision(
+                radarFramesReady = radarFramesReady,
+                forecastFramesReady = forecastFramesReady,
+                radarGeoCovered = radarGeoCovered,
+                forecastGeoCovered = forecastGeoCovered,
+                unifiedPlayable = built.playable,
+                unifiedReadyCount = built.readyFrames.size,
+            )
+            if (decision.skipNetwork) {
                 if (gen == mapGeneration.get()) {
                     publishedTimeline = built
                     publishedGen = gen
@@ -385,8 +395,8 @@ fun MapScreen(modifier: Modifier = Modifier) {
             } else {
                 publishedTimeline = null
                 publishedGen = -1L
-                val needRadar = !radarFramesReady || !radarGeoCovered
-                val needForecast = !forecastFramesReady || !forecastGeoCovered
+                val needRadar = decision.needRadar
+                val needForecast = decision.needForecast
                 // Parallel pipelines — sequential await was a major ~15s contributor.
                 coroutineScope {
                     val radarDeferred = async {
@@ -398,7 +408,14 @@ fun MapScreen(modifier: Modifier = Modifier) {
                         }
                     }
                     val forecastDeferred = async {
-                        if (needForecast) {
+                        val startForecast = needForecast && MapCoveredSkip.shouldStartMapForecast(
+                            coreGetWeatherInFlight = container.weatherRepository.isGetWeatherInFlight(),
+                            gateCoolingDown = container.openMeteoGate.isCoolingDown(),
+                        )
+                        if (needForecast && !startForecast) {
+                            Log.i(MAP_LOAD_TAG, "forecast_yield gen=$gen core_or_cooldown")
+                        }
+                        if (startForecast) {
                             activeForecastFootprint = forecastFp
                             val tf = System.currentTimeMillis()
                             forecastPipeline.loadForViewport(
@@ -697,9 +714,19 @@ fun MapScreen(modifier: Modifier = Modifier) {
                     Text("OBSERVED", color = TerminalMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                     Text("FORECAST", color = TerminalMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                 }
+                val hasObserved = ready.any { it.source == MapFrameSource.OBSERVED_RADAR }
+                val hasForecast = ready.any { it.source == MapFrameSource.FORECAST_PRECIP }
+                if (hasObserved && !hasForecast && !forecastPrep) {
+                    Text(
+                        WeatherCopy.FORECAST_TEMPORARILY_UNAVAILABLE,
+                        color = TerminalMuted,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp,
+                    )
+                }
             } else if (!preparing) {
                 Text(
-                    "PRECIPITATION DATA UNAVAILABLE",
+                    WeatherCopy.PRECIPITATION_UNAVAILABLE,
                     color = TerminalMuted,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.sp,

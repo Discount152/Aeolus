@@ -6,24 +6,25 @@ Updated: 2026-10-23
 
 | Item | Value |
 |------|-------|
-| versionName | `1.0.8` |
-| versionCode | `9` |
-| Branch | `cursor/aeolus-1.0.8-repair-36b5` |
-| APK | `dist/Aeolus-v1.0.8.apk` |
-| Prior APKs | v1.0.0–v1.0.7 preserved ✓ |
+| versionName | `1.0.9` |
+| versionCode | `10` |
+| Branch | `cursor/aeolus-1.0.9-must-ship-2996` |
+| APK | `dist/Aeolus-v1.0.9.apk` |
+| Prior APKs | v1.0.0–v1.0.8 preserved ✓ |
 
-## 1.0.8 jobs
+## 1.0.9 jobs
 
 | Item | Status |
 |------|--------|
-| Map-pin diagnose + timezone=auto + ICON-first | Done |
-| Map latency (parallel, fewer batches, non-block TZ) | Done |
-| Playback one-clock 650 ms + auto-resume | Done |
-| Attribution in bottom chrome | Done |
-| Unit tests | 113 pass |
+| Same-location cache / prior / matching LKG → STALE_WITH_CACHE | Done |
+| Provider-busy copy + Retry anti-spam | Done |
+| Map covered-skip + no empty timeline_publish | Done |
+| Optional: map forecast yield + radar-only forecast copy | Done |
+| Unit tests | 128 pass |
+| lintDebug | SUCCESS (0 errors) |
 | assembleRelease | SUCCESS |
-| Physical pin/playback matrix | Partial — provider 429 + keyguard interrupted late session |
+| Physical QA (`57261FDCQ0011Q`) | 429 still — busy copy verified; not healthy-provider QA |
 
 ## Spec
 
-Store: `internal/aeolus-1.0.8-build-prompt.md`
+Store: `internal/aeolus-1.0.9-must-ship.md` · review §6 · diagnosis §12

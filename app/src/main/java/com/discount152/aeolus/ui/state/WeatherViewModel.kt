@@ -148,6 +148,8 @@ class WeatherViewModel(
     private var weatherLoadJob: Job? = null
     private var pinDebounceJob: Job? = null
     private var permissionResolved = false
+    @Volatile
+    private var lastManualRefreshMs = 0L
     private val locationGeneration = AtomicInteger(0)
     @Volatile
     private var activeLocationGeneration: Int = 0
@@ -381,6 +383,11 @@ class WeatherViewModel(
     }
 
     fun refresh(silent: Boolean = false) {
+        if (!silent) {
+            val now = System.currentTimeMillis()
+            if (!WeatherCopy.allowManualRetry(lastManualRefreshMs, now)) return
+            lastManualRefreshMs = now
+        }
         val gen = activeLocationGeneration
         weatherLoadJob?.cancel()
         weatherLoadJob = viewModelScope.launch {
@@ -504,7 +511,7 @@ class WeatherViewModel(
                     loading = false,
                     refreshing = false,
                     error = if (cached == null) {
-                        "WEATHER DATA TEMPORARILY UNAVAILABLE"
+                        WeatherCopy.PROVIDER_BUSY
                     } else {
                         "Showing cached forecast (refresh failed)."
                     },

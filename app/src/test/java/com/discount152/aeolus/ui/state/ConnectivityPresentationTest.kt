@@ -74,11 +74,14 @@ class ConnectivityPresentationTest {
         val presentation = computeConnectivityPresentation(
             loading = false,
             refreshing = false,
-            error = "WEATHER DATA TEMPORARILY UNAVAILABLE",
+            error = WeatherCopy.PROVIDER_BUSY,
             bundle = null,
             networkValidated = true,
         )
         assertThat(presentation).isEqualTo(ConnectivityPresentation.ONLINE_ERROR_NO_CACHE)
+        assertThat(presentation).isNotEqualTo(ConnectivityPresentation.OFFLINE_NO_CACHE)
+        assertThat(WeatherCopy.PROVIDER_BUSY).isNotEqualTo("OFFLINE")
+        assertThat(WeatherCopy.PROVIDER_BUSY).doesNotContain("HTTP 429")
     }
 
     @Test

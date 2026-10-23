@@ -47,4 +47,12 @@ class OpenMeteoGateTest {
         gate.noteRateLimited(5)
         gate.noteRateLimited(null)
     }
+
+    @Test
+    fun isCoolingDown_trueAfterRateLimit() {
+        val gate = OpenMeteoGate()
+        assertThat(gate.isCoolingDown()).isFalse()
+        gate.noteRateLimited(5)
+        assertThat(gate.isCoolingDown()).isTrue()
+    }
 }

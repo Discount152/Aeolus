@@ -42,6 +42,8 @@ import com.discount152.aeolus.ui.components.MetricTile
 import com.discount152.aeolus.ui.components.formatPrecip
 import com.discount152.aeolus.ui.components.formatTemp
 import com.discount152.aeolus.ui.components.formatWind
+import com.discount152.aeolus.ui.state.ConnectivityPresentation
+import com.discount152.aeolus.ui.state.WeatherCopy
 import com.discount152.aeolus.ui.state.WeatherViewModel
 import com.discount152.aeolus.ui.state.rememberWeatherViewModel
 import com.discount152.aeolus.ui.theme.PhosphorGreen
@@ -78,7 +80,20 @@ fun ForecastScreen(modifier: Modifier = Modifier) {
             return
         }
         if (bundle == null) {
-            Text("No forecast loaded", color = TerminalMuted, fontFamily = FontFamily.Monospace)
+            val empty = when (state.connectivity) {
+                ConnectivityPresentation.ONLINE_ERROR_NO_CACHE -> WeatherCopy.PROVIDER_BUSY
+                ConnectivityPresentation.OFFLINE_NO_CACHE -> WeatherCopy.OFFLINE_NO_CACHE
+                else -> "No forecast loaded"
+            }
+            Text(empty, color = TerminalMuted, fontFamily = FontFamily.Monospace)
+            if (state.connectivity == ConnectivityPresentation.ONLINE_ERROR_NO_CACHE) {
+                Text(
+                    WeatherCopy.PROVIDER_BUSY_HINT,
+                    color = TerminalMuted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                )
+            }
             return
         }
 

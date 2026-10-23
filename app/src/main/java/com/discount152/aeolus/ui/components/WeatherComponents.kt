@@ -244,7 +244,7 @@ fun ModelBarRow(label: String, valueMm: Double?, maxMm: Double, outlier: Boolean
 }
 
 @Composable
-fun ErrorRetry(message: String, onRetry: () -> Unit) {
+fun ErrorRetry(message: String, onRetry: () -> Unit, detail: String? = null) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -253,6 +253,9 @@ fun ErrorRetry(message: String, onRetry: () -> Unit) {
             .padding(16.dp),
     ) {
         Text(text = message, color = TerminalText, fontFamily = FontFamily.Monospace)
+        if (!detail.isNullOrBlank()) {
+            Text(text = detail, color = TerminalMuted, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+        }
         TextButton(onClick = onRetry) {
             Text(text = "RETRY", color = PhosphorGreen, fontFamily = FontFamily.Monospace)
         }

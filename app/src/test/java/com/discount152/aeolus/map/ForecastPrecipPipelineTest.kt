@@ -1,5 +1,6 @@
 package com.discount152.aeolus.map
 
+import android.graphics.Bitmap
 import com.discount152.aeolus.data.network.HourlyBlock
 import com.discount152.aeolus.data.network.OpenMeteoForecastApi
 import com.discount152.aeolus.data.network.OpenMeteoForecastResponse
@@ -7,6 +8,7 @@ import com.discount152.aeolus.domain.units.PrecipitationUnit
 import com.google.common.truth.Truth.assertThat
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
@@ -75,7 +77,7 @@ class ForecastPrecipPipelineTest {
     @Test
     fun rasterInterpolation_marksWetPixel_whenSampleHasPrecip() {
         val rates = DoubleArray(4) { if (it == 0) 3.0 else 0.0 }
-        val bmp = ForecastPrecipRaster.renderBilinear(
+        val pixels = ForecastPrecipRaster.renderBilinearPixels(
             ratesMmPerHour = rates,
             cols = 2,
             rows = 2,
@@ -86,8 +88,8 @@ class ForecastPrecipPipelineTest {
             lonWest = 4.0,
             lonEast = 6.0,
         )
-        assertThat(bmp.getPixel(0, 0)).isNotEqualTo(0)
-        assertThat(bmp.getPixel(7, 7)).isEqualTo(0)
+        assertThat(pixels[0]).isNotEqualTo(0)
+        assertThat(pixels.last()).isEqualTo(0)
     }
 
     @Test
@@ -107,11 +109,16 @@ class ForecastPrecipPipelineTest {
             List(count) { single }
         }
 
+        val fakeBitmap = mockk<Bitmap>(relaxed = true) {
+            every { width } returns 16
+            every { isRecycled } returns false
+        }
         val pipeline = ForecastPrecipPipeline(
             forecastApi = api,
             gridCols = 3,
             gridRows = 2,
             nowUtc = { Instant.parse("2024-06-01T00:00:00Z") },
+            rasterEncoder = ForecastPrecipRasterEncoder { _, _, _ -> fakeBitmap },
         )
         val footprint = ForecastPrecipFootprint(50.0, 52.0, 4.0, 6.0, rasterSizePx = 16)
         pipeline.loadForViewport(footprint, 50.5, 51.5, 4.5, 5.5)
@@ -145,11 +152,15 @@ class ForecastPrecipPipelineTest {
             List(firstArg<String>().split(',').size) { single }
         }
 
+        val fakeBitmap = mockk<Bitmap>(relaxed = true) {
+            every { isRecycled } returns false
+        }
         val pipeline = ForecastPrecipPipeline(
             forecastApi = api,
             gridCols = 3,
             gridRows = 2,
             nowUtc = { Instant.parse("2024-06-01T00:00:00Z") },
+            rasterEncoder = ForecastPrecipRasterEncoder { _, _, _ -> fakeBitmap },
         )
         val footprint = ForecastPrecipFootprint(50.0, 52.0, 4.0, 6.0, rasterSizePx = 8)
         pipeline.loadForViewport(footprint, 50.5, 51.5, 4.5, 5.5)

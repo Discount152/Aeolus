@@ -14,7 +14,6 @@ import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
-import kotlin.math.max
 
 enum class ForecastPrecipFrameStatus {
     PENDING,
@@ -74,11 +73,20 @@ data class PrecipSamplePoint(val lat: Double, val lon: Double)
  * Data source: Open-Meteo forecast API with **Open-Meteo best_match** ([OpenMeteoForecastApi.forecastMultiLocation]).
  * One batched request per viewport refresh; 24 hourly frames interpolated locally from the sample grid.
  */
+fun interface ForecastPrecipRasterEncoder {
+    fun encode(widthPx: Int, heightPx: Int, pixels: IntArray): Bitmap
+}
+
 class ForecastPrecipPipeline(
     private val forecastApi: OpenMeteoForecastApi,
     private val gridCols: Int = DEFAULT_GRID_COLS,
     private val gridRows: Int = DEFAULT_GRID_ROWS,
     private val nowUtc: () -> Instant = { Instant.now().truncatedTo(ChronoUnit.HOURS) },
+    private val rasterEncoder: ForecastPrecipRasterEncoder = ForecastPrecipRasterEncoder { w, h, pixels ->
+        Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { bmp ->
+            bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+        }
+    },
 ) {
     private val mutex = Mutex()
     private val frameCache = LinkedHashMap<String, Bitmap>(48, 0.75f, true)
@@ -182,7 +190,7 @@ class ForecastPrecipPipeline(
 
             val cached = mutex.withLock { frameCache[cacheKey]?.takeIf { !it.isRecycled } }
             val bitmap = cached ?: withContext(Dispatchers.Default) {
-                ForecastPrecipRaster.renderBilinear(
+                val pixels = ForecastPrecipRaster.renderBilinearPixels(
                     ratesMmPerHour = hourRates,
                     cols = gridCols,
                     rows = gridRows,
@@ -193,6 +201,7 @@ class ForecastPrecipPipeline(
                     lonWest = footprint.lonWest,
                     lonEast = footprint.lonEast,
                 )
+                rasterEncoder.encode(size, size, pixels)
             }
 
             if (cached == null) {
@@ -308,7 +317,7 @@ object ForecastPrecipSampling {
 }
 
 object ForecastPrecipRaster {
-    fun renderBilinear(
+    fun renderBilinearPixels(
         ratesMmPerHour: DoubleArray,
         cols: Int,
         rows: Int,
@@ -318,10 +327,10 @@ object ForecastPrecipRaster {
         latNorth: Double,
         lonWest: Double,
         lonEast: Double,
-    ): Bitmap {
-        val pixels = IntArray(widthPx * heightPx)
+    ): IntArray {
+        val pixels = IntArray((widthPx * heightPx).coerceAtLeast(0))
         if (widthPx <= 0 || heightPx <= 0) {
-            return Bitmap.createBitmap(max(1, widthPx), max(1, heightPx), Bitmap.Config.ARGB_8888)
+            return pixels
         }
         var west = lonWest
         var east = lonEast
@@ -362,8 +371,6 @@ object ForecastPrecipRaster {
             }
         }
 
-        return Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888).also { bmp ->
-            bmp.setPixels(pixels, 0, widthPx, 0, 0, widthPx, heightPx)
-        }
+        return pixels
     }
 }

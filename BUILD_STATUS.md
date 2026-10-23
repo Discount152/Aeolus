@@ -2,7 +2,7 @@
 
 Updated: 2026-10-23
 
-## Current release candidate
+## Current release
 
 | Item | Value |
 |------|-------|
@@ -21,11 +21,14 @@ Updated: 2026-10-23
 | Local clock timezone UX | Done |
 | Daily Sky field | Done |
 | Today→Forecast expand | Done |
-| Real-device offline cold-start | **Blocked — no ADB device** |
+| Real-device offline cold-start | **PASS** on `57261FDCQ0011Q` (Pixel 10 Pro XL) |
+
+## Offline root cause
+
+Class **E**: empty offline “live refresh” overwrote LKG. Fixed via coherent-bundle gate.
 
 ## QA
 
-- Unit tests: **94 passed**
-- Lint: **0 errors**
-- assembleRelease: **SUCCESS**
-- Physical offline validation: **NOT RUN** (empty `adb devices`)
+- Unit tests: green (incl. coherent-bundle)
+- assembleRelease: SUCCESS
+- Physical offline + reconnect: PASS

@@ -1,4 +1,4 @@
-# Aeolus 1.0.6 — Unified Map, Forecast UX, Offline Instrumentation
+# Aeolus 1.0.6 — Unified Map, Forecast UX, Offline Cold-Start Fix
 
 ## Version
 
@@ -31,19 +31,73 @@
 - `SkyCondition` daylight cloud-cover categories on Forecast cards.
 - Today daily card tap → Forecast route + auto-expand matching date.
 
-## Offline cold-start
+## Offline cold-start — physical device evidence
 
-- `adb devices` at task start and before release: **no authorized physical device attached**.
-- Per §33: offline defect is **not** marked fixed; 1.0.6 is **not** release-complete for that job.
-- Instrumentation added: process_start / write_attempt / write_success / startup_read / bootstrap / live_refresh logs (`LastKnownGood` tag); fsync on write; retain existing bundle on failed refresh; prefer LKG location on bootstrap.
+### Device
+
+| Field | Value |
+|-------|--------|
+| Serial | `57261FDCQ0011Q` |
+| Model | Pixel 10 Pro XL (`mustang`) |
+| Android | 17 |
+| ADB state | `device` |
+
+### Pre-fix reproduction (bug)
+
+1. Installed `dist/Aeolus-v1.0.6.apk` with `-r` (data preserved) over 1.0.5.
+2. Online launch → LKG write_success **430574** bytes (`daily=16 hourly=48`).
+3. `am force-stop` → disabled wifi/data/airplane → Active default network: **none**.
+4. Relaunch offline logcat:
+
+```
+startup_read: decode_ok ... daily=16 hourly=48 ensemble=true
+bootstrap: lkg_hydrated ... bundleDaily=16 weatherFlow=true
+write_success: bytes=893 ... daily=0 hourly=0   ← DESTROYED GOOD SNAPSHOT
+live_refresh: wrote_lkg=true ... daily=0 hourly=0
+```
+
+5. UI blank except local time (`Feels -`, `-%`, no temps).
+
+### Root cause class
+
+**E — Hydration succeeds but another startup state overwrites it.**
+
+Specifically: offline `fetchLive` returned an “empty success” (all models unavailable → empty consensus) without throwing. `getWeather` treated that as a successful live refresh and **atomically overwrote** last-known-good with an 893-byte hollow bundle, then UI bound to the empty state.
+
+### Fix
+
+- `WeatherRepository.isCoherentLiveBundle`: require ≥1 available model with data + non-empty consensus daily/hourly.
+- Incoherent live results throw into the existing failure path → retain prior `_weather` / cache; **do not** write LKG.
+- `LastKnownGoodStore.write` refuses incoherent bundles (defense in depth).
+
+### Post-fix acceptance (same serial)
+
+Offline relaunch after fix:
+
+```
+decode_ok ... daily=16 hourly=48 ensemble=true
+lkg_hydrated ... weatherFlow=true
+live_refresh_rejected_incoherent: daily=0 hourly=0 availableModels=0 priorWeather=true
+live_refresh_failed: ... retained path
+```
+
+UI hierarchy (uiautomator):
+
+- Today: `OFFLINE DATA`, `7°C`, confidence `96% · HIGH`, precip `7.1 mm`, hourly strip populated
+- Forecast: 15-day + hourly temps populated
+- Models: ECMWF/ICON/GFS + ensemble members + confidence preserved
+- LKG file size remained **429496** (not shrunk)
+
+Reconnect: network restored → `live_refresh: wrote_lkg=true daily=16 hourly=48`; OFFLINE banner cleared; temps remain.
+
+Evidence artifacts under `dist/qa-1.0.6-offline/` (screenshots + XML + logcat).
 
 ## Tests / build
 
-- Unit tests: **94 passed**, 0 failures
-- Lint debug: SUCCESS (0 errors)
-- assembleRelease: SUCCESS
+- Unit tests: include `CoherentLiveBundleTest` — full suite green after fix
+- assembleRelease: SUCCESS (rebuilt after fix)
 
 ## Artifact
 
 - `D:\Project Aeolus\dist\Aeolus-v1.0.6.apk`
-- SHA-256: `2e0f5cea0f2f952295d24f920bde09a6017b62bc1ce6057e3baeb1783c38ece5`
+- SHA-256: `2f97a926b9356996722c23190a4481136559b94dce36f0e31fc89d89fdb1d258`

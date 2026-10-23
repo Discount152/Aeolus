@@ -120,6 +120,20 @@ class WeatherRepository(
             }
             return try {
                 val fresh = fetchLive(stable).copy(location = stable)
+                if (!isCoherentLiveBundle(fresh)) {
+                    android.util.Log.w(
+                        LastKnownGoodStore.TAG,
+                        "live_refresh_rejected_incoherent: locationId=${stable.id} key=$key " +
+                            "daily=${fresh.consensusDaily.size} hourly=${fresh.consensusHourly.size} " +
+                            "availableModels=${fresh.models.count { it.available}} " +
+                            "priorWeather=${_weather.value != null}",
+                    )
+                    error(
+                        "Incoherent live forecast " +
+                            "(daily=${fresh.consensusDaily.size}, hourly=${fresh.consensusHourly.size}, " +
+                            "available=${fresh.models.count { it.available}})",
+                    )
+                }
                 cache.write(key, fresh)
                 snapshots.record(key, fresh)
                 val lkgOk = lastKnownGoodStore.write(fresh)
@@ -263,6 +277,18 @@ class WeatherRepository(
     }
 
     companion object {
+        /**
+         * A live refresh must produce usable Today/Forecast content before it may replace
+         * in-memory state, per-location cache, or last-known-good. Offline failures that
+         * return all-unavailable models must not wipe a good boot snapshot.
+         */
+        fun isCoherentLiveBundle(bundle: WeatherBundle): Boolean {
+            val anyModel = bundle.models.any { it.available && (it.hourly.isNotEmpty() || it.daily.isNotEmpty()) }
+            return anyModel &&
+                bundle.consensusDaily.isNotEmpty() &&
+                bundle.consensusHourly.isNotEmpty()
+        }
+
         fun buildEnsembleUrl(location: GeoLocation): String =
             "https://ensemble-api.open-meteo.com/v1/ensemble".toHttpUrl().newBuilder()
                 .addQueryParameter("latitude", location.latitude.toString())

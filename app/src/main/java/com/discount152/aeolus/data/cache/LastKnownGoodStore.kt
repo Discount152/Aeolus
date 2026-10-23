@@ -86,8 +86,23 @@ class LastKnownGoodStore(
             TAG,
             "write_attempt: path=${snapshotFile.absolutePath} schema=$SCHEMA_VERSION " +
                 "locationId=${bundle.location.id} name=${bundle.location.name} " +
-                "fetchedAt=${bundle.fetchedAtEpochMs}",
+                "fetchedAt=${bundle.fetchedAtEpochMs} " +
+                "daily=${bundle.consensusDaily.size} hourly=${bundle.consensusHourly.size}",
         )
+        // Defense in depth: never destroy a prior good snapshot with an empty/partial bundle.
+        val usable = bundle.consensusDaily.isNotEmpty() &&
+            bundle.consensusHourly.isNotEmpty() &&
+            bundle.models.any { it.available }
+        if (!usable) {
+            Log.e(
+                TAG,
+                "write_refused_incoherent: locationId=${bundle.location.id} " +
+                    "daily=${bundle.consensusDaily.size} hourly=${bundle.consensusHourly.size} " +
+                    "availableModels=${bundle.models.count { it.available}} " +
+                    "priorExists=${snapshotFile.isFile} priorSize=${if (snapshotFile.isFile) snapshotFile.length() else 0}",
+            )
+            return false
+        }
         val payload = LastKnownGoodPayload(
             schemaVersion = SCHEMA_VERSION,
             location = bundle.location,

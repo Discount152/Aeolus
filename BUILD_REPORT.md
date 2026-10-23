@@ -1,50 +1,54 @@
-# Aeolus 1.0.3 — Location, Cache, and Map Simplification
+# Aeolus 1.0.4 — Radar Architecture Replacement
 
 ## Version
 
-- versionName: `1.0.3`
-- versionCode: `4`
-- Prior artifacts preserved: `dist/Aeolus-v1.0.0.apk` … `dist/Aeolus-v1.0.2.apk`
+- versionName: `1.0.4`
+- versionCode: `5`
+- Prior APKs preserved: `dist/Aeolus-v1.0.0.apk` … `dist/Aeolus-v1.0.3.apk`
 
-## Root causes
+## Architecture replacement
 
-### 1. Stuck / undeletable saved locations
-- **Cause:** `selectLocation(persist=true)` auto-upserted every active location (map pins, device GPS, first-launch Amsterdam fallback) into Saved Locations. Fallback used `default:amsterdam` / derived meta ids that felt “built-in”. Delete-by-id could disagree with re-canonicalized ids; deleting the active item did not reassign active location, and re-select paths could re-introduce entries.
-- **Fix:** Separate **active location** (DataStore JSON) from **saved list**. Search / map pin / Current Location / fallback set active only. Explicit **SAVE** adds to saved. Migration normalizes ids and strips auto-persisted fallback Amsterdam. Remove matches by stable id and reassigns active location.
+Removed animated XYZ `RasterSource` / `RadarDoubleBuffer` (fixed 320 ms swap, partial tile covers, staging teardown cancels).
 
-### 2. Offline cold-start cache miss
-- **Cause:** Cache write used volatile `location.id` (unrounded `device:lat,lon` from LocationService) while cold-start lookup used a different saved/selected id (rounded or Amsterdam fallback when active was not durably stored). Startup also preferred fallback before finishing location resolution, so hydrate ran against the wrong key. Exact-id `cache.read` on failure did not always align with the write key.
-- **Fix:** Single `LocationIdentity.stableId` / `cacheKey` (geo provider id or `coord:%.3f,%.3f` / `fallback:amsterdam`). Persist full active location. Write+hydrate always use `cacheKey`. `StartupCoordinator` cold-start order: prefs → active → permission/device/fallback → hydrate → refresh. Failed network retains hydrated state.
+Replaced with RainViewer **coordinate-centered complete images**:
 
-### 3. Cache-key / location identity mismatch
-- **Yes — primary contributor.** Device/map/default id formats diverged across write vs restart. Unified stable identity removes that class of miss; `StartupCoordinatorTest` proves restore via the production key.
+`{host}{path}/512/{z}/{lat}/{lon}/2/1_1.png`
 
-### 4. Amsterdam-first flash
-- **Cause:** Bootstrap fell through to `DEFAULT_LOCATION` before permission/device resolution and could persist it.
-- **Fix:** Permission → device → fallback. While awaiting permission, UI stays loading without publishing Amsterdam. Fallback is ephemeral (not auto-saved).
+Pipeline:
 
-## Map simplification
+1. Viewport → padded square mercator footprint + zoom (`RadarViewport`)
+2. Newest frame downloaded first → shown via `ImageSource` + `RasterLayer`
+3. Remaining historical frames with bounded concurrency
+4. READY only after full HTTP download + decode
+5. Playback iterates READY bitmaps only; loops do not redownload
+6. Camera idle debounce; reuse set while padded footprint still covers viewport
 
-- Removed Temperature and Clouds map layers, legends, viewport sampling, and field raster pipeline.
-- MAP is radar-only (playback, scrubber, opacity, locate, map pin → active location).
+≈ **1 request per timestamp per viewport** (not tiles × frames).
+
+## Obsolete pieces removed
+
+- `RadarDoubleBuffer.kt` (+ test)
+- XYZ `RadarTiles.tileTemplate` usage / tiled MapOverlayController radar path
+- 320 ms `commitSwap` readiness timer
+- Per-frame RasterSource destroy/recreate animation
 
 ## Tests added
 
-- `StartupCoordinatorTest` (full cold-start offline / OFFLINE_WITH_CACHE)
-- `SavedLocationMigrationTest`
-- Expanded `LocationIdentityTest` (stable cache keys)
+- `RadarViewportTest`
+- `RadarImagesTest`
+- `RadarFramePipelineTest` (newest-first, failed-frame honesty, cache reuse, timeline)
 
 ## Results
 
-- Unit tests: **52 passed**, 0 failed  
-- Lint: **0 errors** (warnings only)  
-- `assembleRelease`: **SUCCESS**
+- Unit tests: see test report (all passed)
+- Lint: 0 errors
+- `assembleRelease`: SUCCESS
 
 ## Runtime
 
-No emulator/adb on Aeolus-PC this pass. Device QA still required for permission dialog UX and force-stop offline confirmation.
+No emulator/adb on Aeolus-PC. Live coordinate URL probed HTTP 200 (512px Universal Blue). Device QA recommended for playback/pan.
 
 ## Artifact
 
-- `D:\Project Aeolus\dist\Aeolus-v1.0.3.apk`
-- SHA-256: `12e8929739ffd38e904dc98644fea197e6c76e361844f42405f7b74d77027bd3`
+- `D:\Project Aeolus\dist\Aeolus-v1.0.4.apk`
+- SHA-256: `1605067b198f681d3a0a5cb3d6f663ef6f66509b3bd54751d932b563a3886d10`

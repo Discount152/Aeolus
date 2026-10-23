@@ -1,29 +1,29 @@
 # Aeolus — Build Status
 
-Updated: 2026-10-22
+Updated: 2026-10-23
 
 ## Current release
 
 | Item | Value |
 |------|-------|
-| versionName | `1.0.3` |
-| versionCode | `4` |
-| Branch | `cursor/aeolus-1.0.3-qa-repair-36b5` |
-| APK | `dist/Aeolus-v1.0.3.apk` |
-| Prior APKs | v1.0.0–v1.0.2 preserved ✓ |
+| versionName | `1.0.4` |
+| versionCode | `5` |
+| Branch | `cursor/aeolus-1.0.4-radar-architecture-36b5` |
+| APK | `dist/Aeolus-v1.0.4.apk` |
+| Prior APKs | v1.0.0–v1.0.3 preserved ✓ |
 
-## 1.0.3 changes
+## 1.0.4 radar architecture
 
 | Item | Status |
 |------|--------|
-| Radar-only map (TEMP/CLOUD removed) | Done |
-| Permission → device → fallback startup | Done |
-| Active vs saved locations | Done |
-| All saved deletable + migration | Done |
-| Stable cacheKey + cold-start coordinator | Done |
+| XYZ tiled animation removed | Done |
+| Centered complete ImageSource frames | Done |
+| Newest-first + READY-only playback | Done |
+| ~1 request/timestamp/viewport | Done |
+| Padded footprint reuse | Done |
 
 ## QA
 
-- Unit tests: **52 passed**
+- Unit tests: **62 passed**
 - Lint: **0 errors**, 16 warnings
 - assembleRelease: **SUCCESS**

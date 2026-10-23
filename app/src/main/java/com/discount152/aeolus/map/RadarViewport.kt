@@ -53,6 +53,15 @@ data class RadarFootprint(
             visLatNorth <= latNorth &&
             visLonWest >= lonWest &&
             visLonEast <= lonEast
+
+    /** Geographic cover is not enough if this mosaic is coarser than the viewport wants. */
+    fun coversVisibleAtZoom(
+        visLatSouth: Double,
+        visLatNorth: Double,
+        visLonWest: Double,
+        visLonEast: Double,
+        desiredZoom: Int,
+    ): Boolean = zoom >= desiredZoom && coversVisible(visLatSouth, visLatNorth, visLonWest, visLonEast)
 }
 
 object RadarViewport {
@@ -250,5 +259,22 @@ object RadarViewport {
         if (l > 180.0) l -= 360.0
         if (l < -180.0) l += 360.0
         return l
+    }
+
+    /**
+     * Reject MapLibre's pre-camera world bounds (invalid / whole-earth). A first style load
+     * must not become the cached footprint that later [coversVisible] every city view.
+     */
+    fun visibleBoundsUsable(
+        latSouth: Double,
+        latNorth: Double,
+        lonWest: Double,
+        lonEast: Double,
+    ): Boolean {
+        if (latSouth.isNaN() || latNorth.isNaN() || lonWest.isNaN() || lonEast.isNaN()) return false
+        if (latSouth < -MERCATOR_MAX_LAT || latNorth > MERCATOR_MAX_LAT) return false
+        if (latNorth <= latSouth) return false
+        if (latNorth - latSouth > 70.0) return false
+        return true
     }
 }

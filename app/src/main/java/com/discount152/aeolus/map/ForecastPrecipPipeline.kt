@@ -44,6 +44,23 @@ data class ForecastPrecipFootprint(
             visLatNorth <= latNorth &&
             visLonWest >= lonWest &&
             visLonEast <= lonEast
+
+    /**
+     * A world-scale cached raster must not cover a city viewport just because the box contains it.
+     */
+    fun coversVisibleAdequately(
+        visLatSouth: Double,
+        visLatNorth: Double,
+        visLonWest: Double,
+        visLonEast: Double,
+    ): Boolean {
+        if (latSouth < -85.05 || latNorth > 85.05) return false
+        if (!coversVisible(visLatSouth, visLatNorth, visLonWest, visLonEast)) return false
+        val span = latNorth - latSouth
+        val visSpan = (visLatNorth - visLatSouth).coerceAtLeast(0.01)
+        if (span > visSpan * 4.0 && span > 25.0) return false
+        return true
+    }
 }
 
 data class ForecastPrecipFrame(

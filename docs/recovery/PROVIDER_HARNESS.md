@@ -10,6 +10,8 @@ OkHttp interceptor installed **after** `OpenMeteoGate` on the shared Open-Meteo 
 
 Default scenario is `LIVE` (passthrough).
 
+D7: the interceptor **does not synthesize** Open-Meteo responses when [NetworkStatus] has no validated user NIC (wifi / cell / ethernet / VPN). USB-only ADB does not count. Radio-off therefore presents OFFLINE, not harness LIVE. Release factory never installs this interceptor.
+
 ## Scenarios
 
 | Scenario | Transport | Expected core path |

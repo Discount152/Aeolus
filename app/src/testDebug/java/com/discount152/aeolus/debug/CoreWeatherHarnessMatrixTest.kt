@@ -209,6 +209,30 @@ class CoreWeatherHarnessMatrixTest {
     }
 
     @Test
+    fun successFull_unvalidatedNic_retainsCacheAsOfflineNotLive() = runTest {
+        DebugWeatherHarness.scenario = DebugWeatherScenario.SUCCESS_FULL
+        val cache = ForecastCache(tmp.newFolder("forecasts-d7"), json)
+        val repo = repo(cache = cache)
+        val live = repo.getWeather(groningen, forceRefresh = true)
+        assertThat(live.stale).isFalse()
+
+        DebugWeatherHarness.networkValidatedProvider = { false }
+        val retained = repo.getWeather(groningen, forceRefresh = true)
+        assertThat(retained.stale).isTrue()
+        assertThat(retained.fromCache).isTrue()
+        assertThat(LocationIdentity.stableId(retained.location)).isEqualTo(LocationIdentity.stableId(groningen))
+        assertPresentation(
+            bundle = retained,
+            error = "Showing cached forecast (refresh failed).",
+            expected = ConnectivityPresentation.OFFLINE_WITH_CACHE,
+            networkValidated = false,
+        )
+        assertThat(
+            computeConnectivityPresentation(false, false, null, live.copy(stale = false), false),
+        ).isEqualTo(ConnectivityPresentation.OFFLINE_WITH_CACHE)
+    }
+
+    @Test
     fun locationRace_groningenThenSide_lateGroningenNeverDisplaysAsSide() = runTest {
         DebugWeatherHarness.scenario = DebugWeatherScenario.SUCCESS_FULL
         DebugWeatherHarness.slowDelayMs = 40L

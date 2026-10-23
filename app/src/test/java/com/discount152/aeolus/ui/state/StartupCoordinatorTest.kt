@@ -114,9 +114,11 @@ class StartupCoordinatorTest {
             refreshing = false,
             error = "Showing cached forecast (refresh failed).",
             bundle = restored,
+            networkValidated = false,
         )
         assertThat(presentation).isEqualTo(ConnectivityPresentation.OFFLINE_WITH_CACHE)
-        assertThat(presentation).isNotEqualTo(ConnectivityPresentation.ERROR_NO_CACHE)
+        assertThat(presentation).isNotEqualTo(ConnectivityPresentation.ONLINE_ERROR_NO_CACHE)
+        assertThat(presentation).isNotEqualTo(ConnectivityPresentation.OFFLINE_NO_CACHE)
 
         // Repository shared state also populated
         assertThat(repo2.weather.first()).isNotNull()

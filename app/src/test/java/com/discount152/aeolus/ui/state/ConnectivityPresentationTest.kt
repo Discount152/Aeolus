@@ -25,6 +25,7 @@ class ConnectivityPresentationTest {
             refreshing = true,
             error = null,
             bundle = bundle,
+            networkValidated = true,
         )
         assertThat(presentation).isEqualTo(ConnectivityPresentation.REFRESHING_WITH_CACHE)
     }
@@ -37,30 +38,71 @@ class ConnectivityPresentationTest {
             refreshing = false,
             error = null,
             bundle = live,
+            networkValidated = true,
         )
         assertThat(presentation).isEqualTo(ConnectivityPresentation.LIVE)
     }
 
     @Test
-    fun refreshFailedWithCache_isOfflineWithCache() {
+    fun refreshFailedWithCache_onlineNetwork_isStaleWithCache() {
         val stale = bundle.copy(fromCache = true, stale = true)
         val presentation = computeConnectivityPresentation(
             loading = false,
             refreshing = false,
             error = "Showing cached forecast (refresh failed).",
             bundle = stale,
+            networkValidated = true,
+        )
+        assertThat(presentation).isEqualTo(ConnectivityPresentation.STALE_WITH_CACHE)
+        assertThat(presentation).isNotEqualTo(ConnectivityPresentation.OFFLINE_WITH_CACHE)
+    }
+
+    @Test
+    fun refreshFailedWithCache_offlineNetwork_isOfflineWithCache() {
+        val stale = bundle.copy(fromCache = true, stale = true)
+        val presentation = computeConnectivityPresentation(
+            loading = false,
+            refreshing = false,
+            error = "Showing cached forecast (refresh failed).",
+            bundle = stale,
+            networkValidated = false,
         )
         assertThat(presentation).isEqualTo(ConnectivityPresentation.OFFLINE_WITH_CACHE)
     }
 
     @Test
-    fun noDataAndError_isErrorNoCache() {
+    fun noDataAndError_validatedNetwork_isOnlineErrorNoCache() {
         val presentation = computeConnectivityPresentation(
             loading = false,
             refreshing = false,
             error = "Unable to load forecast. Check connection and retry.",
             bundle = null,
+            networkValidated = true,
         )
-        assertThat(presentation).isEqualTo(ConnectivityPresentation.ERROR_NO_CACHE)
+        assertThat(presentation).isEqualTo(ConnectivityPresentation.ONLINE_ERROR_NO_CACHE)
+    }
+
+    @Test
+    fun noData_noValidatedNetwork_isOfflineNoCache() {
+        val presentation = computeConnectivityPresentation(
+            loading = false,
+            refreshing = false,
+            error = "Unable to load forecast. Check connection and retry.",
+            bundle = null,
+            networkValidated = false,
+        )
+        assertThat(presentation).isEqualTo(ConnectivityPresentation.OFFLINE_NO_CACHE)
+    }
+
+    @Test
+    fun loadingNoBundle_validatedNetwork_staysLiveForLoadingUi() {
+        val presentation = computeConnectivityPresentation(
+            loading = true,
+            refreshing = false,
+            error = null,
+            bundle = null,
+            networkValidated = true,
+        )
+        assertThat(presentation).isEqualTo(ConnectivityPresentation.LIVE)
     }
 }

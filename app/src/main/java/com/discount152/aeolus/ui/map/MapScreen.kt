@@ -140,7 +140,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
     }
     val ready = timeline.readyFrames
     val offlineMap = state.connectivity == ConnectivityPresentation.OFFLINE_WITH_CACHE ||
-        state.connectivity == ConnectivityPresentation.ERROR_NO_CACHE
+        state.connectivity == ConnectivityPresentation.OFFLINE_NO_CACHE
 
     LaunchedEffect(Unit) { container.settingsRepository.ensureHomeTimezoneInitialized() }
     LaunchedEffect(state.radarOpacity) { overlayOpacity = state.radarOpacity }
@@ -224,7 +224,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
         loadJob?.cancel()
         loadJob = scope.launch {
             val online = state.connectivity != ConnectivityPresentation.OFFLINE_WITH_CACHE &&
-                state.connectivity != ConnectivityPresentation.ERROR_NO_CACHE
+                state.connectivity != ConnectivityPresentation.OFFLINE_NO_CACHE
             tzResolver.resolve(centerLat, centerLon, allowNetwork = online)?.let {
                 viewedZoneId = it.id
             } ?: state.location?.timezone?.let { viewedZoneId = it }

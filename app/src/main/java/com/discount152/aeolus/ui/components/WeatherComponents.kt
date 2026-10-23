@@ -64,7 +64,11 @@ fun StaleBanner(lastUpdatedEpochMs: Long, offline: Boolean, modifier: Modifier =
     val ageMs = (System.currentTimeMillis() - lastUpdatedEpochMs).coerceAtLeast(0)
     val hours = ageMs / 3_600_000
     val mins = (ageMs % 3_600_000) / 60_000
-    val label = if (offline) "OFFLINE DATA" else "STALE DATA"
+    val label = if (offline) {
+        "OFFLINE DATA"
+    } else {
+        "SHOWING SAVED DATA · LIVE UPDATE UNAVAILABLE"
+    }
     Text(
         text = "$label · LAST UPDATED ${hours}H ${mins}M AGO",
         color = Color(0xFFFFB454),

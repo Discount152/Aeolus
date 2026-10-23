@@ -1,6 +1,11 @@
 package com.discount152.aeolus.ui.state
 
 import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import com.discount152.aeolus.data.network.NetworkStatus
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -38,7 +43,7 @@ data class WeatherUiState(
     val savedLocations: List<GeoLocation> = emptyList(),
     val searchResults: List<GeoLocation> = emptyList(),
     val searchQuery: String = "",
-    val connectivity: ConnectivityPresentation = ConnectivityPresentation.ERROR_NO_CACHE,
+    val connectivity: ConnectivityPresentation = ConnectivityPresentation.OFFLINE_NO_CACHE,
     val locationIsSaved: Boolean = false,
     val awaitingLocationPermission: Boolean = false,
 )
@@ -74,10 +79,32 @@ class WeatherViewModel(
     private val _forecastExpandDate = MutableStateFlow<String?>(null)
     val forecastExpandDate: StateFlow<String?> = _forecastExpandDate.asStateFlow()
 
+    private val connectivityManager =
+        getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    private val _networkValidated = MutableStateFlow(NetworkStatus.isValidated(getApplication()))
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            _networkValidated.value = NetworkStatus.isValidated(getApplication())
+        }
+
+        override fun onLost(network: Network) {
+            _networkValidated.value = NetworkStatus.isValidated(getApplication())
+        }
+
+        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+            _networkValidated.value =
+                networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+    }
+
     val state: StateFlow<WeatherUiState> = combine(
         _meta,
         container.weatherRepository.weather,
-    ) { meta, bundle ->
+        _networkValidated,
+    ) { meta, bundle, networkValidated ->
         val loc = meta.location ?: bundle?.location
         WeatherUiState(
             loading = meta.loading,
@@ -95,6 +122,7 @@ class WeatherViewModel(
                 refreshing = meta.refreshing,
                 error = meta.error,
                 bundle = bundle,
+                networkValidated = networkValidated,
             ),
             locationIsSaved = loc != null && meta.savedLocations.any {
                 LocationIdentity.stableId(it) == LocationIdentity.stableId(loc)
@@ -111,6 +139,7 @@ class WeatherViewModel(
     private var permissionResolved = false
 
     init {
+        connectivityManager.registerDefaultNetworkCallback(networkCallback)
         viewModelScope.launch {
             container.settingsRepository.unitPreferences.collect { units ->
                 _meta.update { it.copy(units = units) }
@@ -416,6 +445,11 @@ class WeatherViewModel(
                 )
             }
         }
+    }
+
+    override fun onCleared() {
+        runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
+        super.onCleared()
     }
 
     companion object {

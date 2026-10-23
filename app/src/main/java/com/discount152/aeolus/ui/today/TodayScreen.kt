@@ -142,10 +142,20 @@ fun TodayScreen(
                 }
             }
 
-            state.connectivity == ConnectivityPresentation.ERROR_NO_CACHE &&
-                bundle == null &&
-                state.error != null -> {
-                ErrorRetry(message = state.error!!, onRetry = { vm.refresh() })
+            state.connectivity == ConnectivityPresentation.ONLINE_ERROR_NO_CACHE &&
+                bundle == null -> {
+                ErrorRetry(
+                    message = "WEATHER DATA TEMPORARILY UNAVAILABLE",
+                    onRetry = { vm.refresh() },
+                )
+            }
+
+            state.connectivity == ConnectivityPresentation.OFFLINE_NO_CACHE &&
+                bundle == null -> {
+                ErrorRetry(
+                    message = "OFFLINE · NO SAVED FORECAST",
+                    onRetry = { vm.refresh() },
+                )
             }
 
             bundle != null && location != null -> {
@@ -162,11 +172,18 @@ fun TodayScreen(
                                 offline = true,
                             )
                         }
+                        ConnectivityPresentation.STALE_WITH_CACHE -> {
+                            StaleBanner(
+                                lastUpdatedEpochMs = bundle.fetchedAtEpochMs,
+                                offline = false,
+                            )
+                        }
                         ConnectivityPresentation.REFRESHING_WITH_CACHE -> {
                             UpdatingBanner()
                         }
                         ConnectivityPresentation.LIVE,
-                        ConnectivityPresentation.ERROR_NO_CACHE,
+                        ConnectivityPresentation.ONLINE_ERROR_NO_CACHE,
+                        ConnectivityPresentation.OFFLINE_NO_CACHE,
                         -> Unit
                     }
 

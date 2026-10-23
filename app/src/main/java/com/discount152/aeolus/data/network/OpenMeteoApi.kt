@@ -27,6 +27,21 @@ interface OpenMeteoForecastApi {
         @Query("wind_speed_unit") windSpeedUnit: String = "kmh",
         @Query("precipitation_unit") precipitationUnit: String = "mm",
     ): OpenMeteoForecastResponse
+
+    /**
+     * Batched forecast for many coordinates in one request (comma-separated [latitude] / [longitude]).
+     * Uses Open-Meteo **best_match** model selection for coherent regional output.
+     */
+    @GET("v1/forecast")
+    suspend fun forecastMultiLocation(
+        @Query("latitude") latitude: String,
+        @Query("longitude") longitude: String,
+        @Query("timezone") timezone: String = "UTC",
+        @Query("forecast_days") forecastDays: Int = 2,
+        @Query("models") models: String = "best_match",
+        @Query("hourly") hourly: String = "precipitation",
+        @Query("precipitation_unit") precipitationUnit: String = "mm",
+    ): List<OpenMeteoForecastResponse>
 }
 
 interface OpenMeteoEnsembleApi {

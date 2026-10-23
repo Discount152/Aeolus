@@ -50,6 +50,7 @@ class WeatherViewModel(
         settings = container.settingsRepository,
         locationService = container.locationService,
         weatherRepository = container.weatherRepository,
+        lastKnownGoodStore = container.lastKnownGoodStore,
     )
 
     private val _meta = MutableStateFlow(MetaState())
@@ -130,6 +131,17 @@ class WeatherViewModel(
     }
 
     private suspend fun bootstrap() {
+        val bootFromLkg = startup.bootFromLastKnownGood()
+        if (bootFromLkg != null) {
+            _meta.update {
+                it.copy(
+                    location = bootFromLkg.location,
+                    loading = false,
+                    error = null,
+                )
+            }
+        }
+
         val permissionGranted = container.locationService.hasPermission()
         val (location, needsPermission) = startup.resolveInitialLocation(
             permissionGranted = permissionGranted,
@@ -137,13 +149,23 @@ class WeatherViewModel(
         )
 
         if (needsPermission) {
-            _meta.update {
-                it.copy(
-                    loading = true,
-                    awaitingLocationPermission = true,
-                    // Do not publish Amsterdam to UI yet — wait for permission result
-                    location = null,
-                )
+            if (bootFromLkg != null) {
+                _meta.update {
+                    it.copy(
+                        loading = false,
+                        awaitingLocationPermission = true,
+                        location = bootFromLkg.location,
+                    )
+                }
+            } else {
+                _meta.update {
+                    it.copy(
+                        loading = true,
+                        awaitingLocationPermission = true,
+                        // Do not publish Amsterdam to UI yet — wait for permission result
+                        location = null,
+                    )
+                }
             }
             _permissionRequests.tryEmit(Unit)
             return
@@ -331,6 +353,7 @@ class WeatherViewModel(
             _meta.update { it.copy(loading = false, refreshing = true) }
         }
 
+        val priorBundle = container.weatherRepository.weather.value
         runCatching {
             container.weatherRepository.getWeather(location, forceRefresh = force)
         }.onSuccess {
@@ -338,14 +361,18 @@ class WeatherViewModel(
         }.onFailure {
             val cached = container.weatherRepository.cachedFor(location)
                 ?: container.weatherRepository.weather.value
+                ?: priorBundle
             if (cached != null) {
-                container.weatherRepository.hydrateFromCache(location, markStale = true)
+                val fromDisk = container.weatherRepository.hydrateFromCache(location, markStale = true)
+                if (fromDisk == null) {
+                    container.weatherRepository.publishBootSnapshot(cached)
+                }
             }
             _meta.update {
                 it.copy(
                     loading = false,
                     refreshing = false,
-                    error = if (cached == null && container.weatherRepository.weather.value == null) {
+                    error = if (cached == null) {
                         "Unable to load forecast. Check connection and retry."
                     } else {
                         "Showing cached forecast (refresh failed)."

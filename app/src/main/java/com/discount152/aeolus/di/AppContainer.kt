@@ -7,6 +7,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.discount152.aeolus.BuildConfig
 import com.discount152.aeolus.data.cache.ForecastCache
 import com.discount152.aeolus.data.cache.ForecastSnapshotStore
+import com.discount152.aeolus.data.cache.LastKnownGoodStore
 import com.discount152.aeolus.data.network.OpenMeteoEnsembleApi
 import com.discount152.aeolus.data.network.OpenMeteoForecastApi
 import com.discount152.aeolus.data.network.OpenMeteoGeocodingApi
@@ -75,6 +76,9 @@ class AppContainer(context: Context) {
     val forecastSnapshotStore: ForecastSnapshotStore =
         ForecastSnapshotStore(applicationContext, json)
 
+    val lastKnownGoodStore: LastKnownGoodStore =
+        LastKnownGoodStore(applicationContext, json)
+
     val settingsRepository: SettingsRepository =
         SettingsRepository(preferencesDataStore, json)
 
@@ -85,6 +89,7 @@ class AppContainer(context: Context) {
             geocodingApi = geocodingApi,
             cache = forecastCache,
             snapshots = forecastSnapshotStore,
+            lastKnownGoodStore = lastKnownGoodStore,
             okHttp = okHttpClient,
             json = json,
         )

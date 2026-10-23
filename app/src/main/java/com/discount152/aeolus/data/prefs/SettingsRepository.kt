@@ -9,12 +9,14 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.discount152.aeolus.domain.models.GeoLocation
 import com.discount152.aeolus.domain.units.UnitPreferences
+import com.discount152.aeolus.map.MapTimezoneMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.time.ZoneId
 
 class SettingsRepository(
     private val dataStore: DataStore<Preferences>,
@@ -53,6 +55,23 @@ class SettingsRepository(
 
     val locationMigrationVersion: Flow<Int> =
         dataStore.data.map { it[Keys.LOCATION_MIGRATION_VERSION] ?: 0 }
+
+    val mapTimezoneMode: Flow<MapTimezoneMode> =
+        dataStore.data.map { prefs ->
+            prefs[Keys.MAP_TIMEZONE_MODE]?.let { raw ->
+                runCatching { MapTimezoneMode.valueOf(raw) }.getOrNull()
+            } ?: MapTimezoneMode.VIEWED_LOCATION
+        }
+
+    val homeTimezoneId: Flow<String> =
+        dataStore.data.map {
+            it[Keys.HOME_TIMEZONE_ID] ?: ZoneId.systemDefault().id
+        }
+
+    val customTimezoneId: Flow<String> =
+        dataStore.data.map {
+            it[Keys.CUSTOM_TIMEZONE_ID] ?: ZoneId.systemDefault().id
+        }
 
     suspend fun setUnitPreferences(units: UnitPreferences) {
         dataStore.edit { it[Keys.UNIT_PREFERENCES_JSON] = json.encodeToString(units) }
@@ -93,6 +112,26 @@ class SettingsRepository(
         dataStore.edit { it[Keys.LOCATION_MIGRATION_VERSION] = version }
     }
 
+    suspend fun setMapTimezoneMode(mode: MapTimezoneMode) {
+        dataStore.edit { it[Keys.MAP_TIMEZONE_MODE] = mode.name }
+    }
+
+    suspend fun setHomeTimezoneId(zoneId: String) {
+        dataStore.edit { it[Keys.HOME_TIMEZONE_ID] = zoneId }
+    }
+
+    suspend fun ensureHomeTimezoneInitialized() {
+        dataStore.edit { prefs ->
+            if (prefs[Keys.HOME_TIMEZONE_ID] == null) {
+                prefs[Keys.HOME_TIMEZONE_ID] = ZoneId.systemDefault().id
+            }
+        }
+    }
+
+    suspend fun setCustomTimezoneId(zoneId: String) {
+        dataStore.edit { it[Keys.CUSTOM_TIMEZONE_ID] = zoneId }
+    }
+
     suspend fun awaitActiveLocation(): GeoLocation? = activeLocation.first()
 
     private object Keys {
@@ -103,6 +142,9 @@ class SettingsRepository(
         val ACTIVE_LOCATION_JSON = stringPreferencesKey("active_location_json")
         val LOCATION_NAG_DISMISSED = booleanPreferencesKey("location_nag_dismissed")
         val LOCATION_MIGRATION_VERSION = intPreferencesKey("location_migration_version")
+        val MAP_TIMEZONE_MODE = stringPreferencesKey("map_timezone_mode")
+        val HOME_TIMEZONE_ID = stringPreferencesKey("home_timezone_id")
+        val CUSTOM_TIMEZONE_ID = stringPreferencesKey("custom_timezone_id")
     }
 
     companion object {

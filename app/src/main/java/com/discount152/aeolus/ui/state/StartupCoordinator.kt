@@ -1,5 +1,6 @@
 package com.discount152.aeolus.ui.state
 
+import com.discount152.aeolus.data.cache.LastKnownGoodStore
 import com.discount152.aeolus.data.prefs.SettingsRepository
 import com.discount152.aeolus.data.repository.WeatherRepository
 import com.discount152.aeolus.domain.models.GeoLocation
@@ -18,6 +19,7 @@ class StartupCoordinator(
     private val settings: SettingsRepository,
     private val locationService: DeviceLocationSource,
     private val weatherRepository: WeatherRepository,
+    private val lastKnownGoodStore: LastKnownGoodStore,
 ) {
     data class StartupResult(
         val location: GeoLocation,
@@ -80,9 +82,33 @@ class StartupCoordinator(
     }
 
     /**
-     * Full cold-start without network: migrate → resolve location → hydrate with production cache key.
+     * Restore the global last-known-good snapshot (no GPS, geocoding, or network).
+     */
+    suspend fun bootFromLastKnownGood(): StartupResult? {
+        val snapshot = lastKnownGoodStore.read() ?: return null
+        val location = LocationIdentity.withStableId(snapshot.location)
+        val bundle = snapshot.bundle.copy(
+            location = location,
+            fromCache = true,
+            stale = true,
+        )
+        settings.setActiveLocation(location)
+        weatherRepository.publishBootSnapshot(bundle)
+        return StartupResult(
+            location = location,
+            bundle = weatherRepository.weather.value ?: bundle,
+            fromCache = true,
+            cacheKey = LocationIdentity.cacheKey(location),
+            needsPermissionRequest = false,
+        )
+    }
+
+    /**
+     * Full cold-start without network: LKG → migrate → resolve location → hydrate with production cache key.
      */
     suspend fun coldStartOffline(permissionGranted: Boolean = false): StartupResult {
+        bootFromLastKnownGood()?.let { return it }
+
         val (location, needsPermission) = resolveInitialLocation(
             permissionGranted = permissionGranted,
             allowPermissionPrompt = false,

@@ -2,6 +2,7 @@ package com.discount152.aeolus.ui.state
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.discount152.aeolus.data.cache.ForecastCache
+import com.discount152.aeolus.data.cache.LastKnownGoodStore
 import com.discount152.aeolus.data.prefs.SettingsRepository
 import com.discount152.aeolus.data.repository.WeatherRepository
 import com.discount152.aeolus.domain.consensus.ConsensusEngine
@@ -75,12 +76,15 @@ class StartupCoordinatorTest {
         val session2Job = Job()
         val settings2 = settingsRepo(prefsFile, session2Job)
         val cache2 = ForecastCache(cacheDir, json)
+        val lkgFile = File(tmp.newFolder("lkg"), "last_known_good.json")
+        val lkgStore = LastKnownGoodStore(lkgFile, json)
         val repo2 = WeatherRepository(
             forecastApi = mockk(relaxed = true),
             ensembleApi = mockk(relaxed = true),
             geocodingApi = mockk(relaxed = true),
             cache = cache2,
             snapshots = mockk(relaxed = true),
+            lastKnownGoodStore = lkgStore,
             okHttp = OkHttpClient(),
             json = json,
         )
@@ -88,7 +92,7 @@ class StartupCoordinatorTest {
             override fun hasPermission(): Boolean = false
             override suspend fun currentLocation(): GeoLocation? = null
         }
-        val coordinator = StartupCoordinator(settings2, device, repo2)
+        val coordinator = StartupCoordinator(settings2, device, repo2, lkgStore)
         val result = coordinator.coldStartOffline(permissionGranted = false)
         session2Job.cancel()
 

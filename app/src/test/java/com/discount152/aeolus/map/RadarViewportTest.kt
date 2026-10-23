@@ -17,7 +17,7 @@ class RadarViewportTest {
         assertThat(fp.lonWest).isAtMost(3.2)
         assertThat(fp.lonEast).isAtLeast(7.5)
         assertThat(fp.zoom).isIn(RadarViewport.SOURCE_MIN_ZOOM..RadarViewport.SOURCE_MAX_ZOOM)
-        assertThat(fp.sizePx).isEqualTo(512)
+        assertThat(fp.tileSizePx).isEqualTo(512)
     }
 
     @Test

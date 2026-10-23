@@ -2,6 +2,7 @@ package com.discount152.aeolus.data.repository
 
 import com.discount152.aeolus.data.cache.ForecastCache
 import com.discount152.aeolus.data.cache.ForecastSnapshotStore
+import com.discount152.aeolus.data.cache.LastKnownGoodStore
 import com.discount152.aeolus.data.network.ForecastMapper
 import com.discount152.aeolus.data.network.OpenMeteoEnsembleApi
 import com.discount152.aeolus.data.network.OpenMeteoForecastApi
@@ -37,6 +38,7 @@ class WeatherRepository(
     private val geocodingApi: OpenMeteoGeocodingApi,
     private val cache: ForecastCache,
     private val snapshots: ForecastSnapshotStore,
+    private val lastKnownGoodStore: LastKnownGoodStore,
     private val okHttp: OkHttpClient,
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true },
 ) {
@@ -89,6 +91,16 @@ class WeatherRepository(
         return cached
     }
 
+    /** Offline cold-start: publish LKG snapshot without touching per-location cache keys. */
+    fun publishBootSnapshot(bundle: WeatherBundle) {
+        val stable = LocationIdentity.withStableId(bundle.location)
+        _weather.value = bundle.copy(
+            location = stable,
+            fromCache = true,
+            stale = true,
+        )
+    }
+
     suspend fun getWeather(location: GeoLocation, forceRefresh: Boolean = false): WeatherBundle =
         mutex.withLock {
             val stable = LocationIdentity.withStableId(location)
@@ -107,6 +119,7 @@ class WeatherRepository(
                 val fresh = fetchLive(stable).copy(location = stable)
                 cache.write(key, fresh)
                 snapshots.record(key, fresh)
+                lastKnownGoodStore.write(fresh)
                 _weather.value = fresh
                 fresh
             } catch (e: Exception) {

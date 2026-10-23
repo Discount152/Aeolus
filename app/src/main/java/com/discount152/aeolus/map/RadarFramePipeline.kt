@@ -51,8 +51,8 @@ data class RadarSession(
 }
 
 /**
- * Downloads complete RainViewer centered radar images (≈1 request per timestamp per viewport).
- * Newest frame first; historical frames with bounded concurrency; READY only after full decode.
+ * Downloads RainViewer XYZ tiles (≤~4/frame), stitches complete mosaics, then exposes
+ * READY frames to MapLibre via ImageSource. MapLibre never fetches animated radar tiles.
  */
 fun interface RadarImageDecoder {
     fun decode(bytes: ByteArray): Bitmap?
@@ -66,17 +66,33 @@ class RadarFramePipeline(
     private val decoder: RadarImageDecoder = RadarImageDecoder { bytes ->
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     },
+    private val stitcher: (RadarFootprint, List<Bitmap>) -> Bitmap = { fp, tiles ->
+        RadarMosaic.stitch(fp, tiles)
+    },
 ) {
     private val mutex = Mutex()
-    private val cache = LinkedHashMap<String, Bitmap>(64, 0.75f, true)
-    private val maxCacheEntries = 48
+    /** Completed mosaic frames. */
+    private val frameCache = LinkedHashMap<String, Bitmap>(64, 0.75f, true)
+    private val maxFrameCacheEntries = 48
+    /** Individual XYZ tiles shared across footprints. */
+    private val tileCache = LinkedHashMap<String, Bitmap>(256, 0.75f, true)
+    private val maxTileCacheEntries = 200
 
     private val _session = MutableStateFlow<RadarSession?>(null)
     val session: StateFlow<RadarSession?> = _session.asStateFlow()
 
+    /** Test/diagnostic: network tile fetches since last clear. */
+    @Volatile
+    var networkTileFetches: Int = 0
+        private set
+
     private var metadataHost: String? = null
     private var metadataFrames: List<RainViewerFrame> = emptyList()
     private var metadataAt = 0L
+
+    fun resetNetworkCounters() {
+        networkTileFetches = 0
+    }
 
     suspend fun ensureMetadata(force: Boolean = false): Pair<String, List<RainViewerFrame>> =
         mutex.withLock {
@@ -96,7 +112,7 @@ class RadarFramePipeline(
         }
 
     /**
-     * Load radar set for [footprint]. Reuses cache for identical frame/viewport keys.
+     * Load mosaic set for [footprint]. Reuses tile/frame caches.
      * Emits session updates as frames become READY.
      */
     suspend fun loadForViewport(footprint: RadarFootprint, forceMetadata: Boolean = false) {
@@ -118,35 +134,34 @@ class RadarFramePipeline(
 
         val initial = past.map { f ->
             val key = RadarImages.frameCacheKey(f.path, footprint)
-            val cached = mutex.withLock { cache[key] }
+            val cached = mutex.withLock { frameCache[key] }
             if (cached != null && !cached.isRecycled) {
                 RadarFrameAsset(
                     time = f.time,
                     path = f.path,
                     status = RadarFrameStatus.READY,
                     bitmap = cached,
-                    url = RadarImages.centeredImageUrl(
-                        host, f.path, footprint.zoom, footprint.centerLat, footprint.centerLon, footprint.sizePx,
-                    ),
+                    url = mosaicLabel(host, f.path, footprint),
                 )
             } else {
                 RadarFrameAsset(f.time, f.path, RadarFrameStatus.PENDING)
             }
         }
-        _session.value = RadarSession(host, footprint, initial, preparing = initial.any { it.status != RadarFrameStatus.READY })
+        _session.value = RadarSession(
+            host, footprint, initial,
+            preparing = initial.any { it.status != RadarFrameStatus.READY },
+        )
 
-        // Newest first
         val ordered = past.sortedByDescending { it.time }
         val newest = ordered.first()
-        downloadOne(host, newest, footprint)
-        // Remaining with bounded concurrency
+        downloadMosaic(host, newest, footprint)
         val rest = ordered.drop(1)
         coroutineScope {
             val semaphore = Semaphore(maxConcurrency)
             rest.map { frame ->
                 async(Dispatchers.IO) {
                     semaphore.withPermit {
-                        downloadOne(host, frame, footprint)
+                        downloadMosaic(host, frame, footprint)
                     }
                 }
             }.awaitAll()
@@ -157,13 +172,12 @@ class RadarFramePipeline(
         }
     }
 
-    /** Fetch a single frame on demand (e.g. scrub to not-yet-ready). */
     suspend fun ensureFrame(time: Long) {
         val sess = _session.value ?: return
         val asset = sess.frames.find { it.time == time } ?: return
         if (asset.status == RadarFrameStatus.READY && asset.bitmap != null) return
         val meta = metadataFrames.find { it.time == time } ?: return
-        downloadOne(sess.host, meta, sess.footprint)
+        downloadMosaic(sess.host, meta, sess.footprint)
     }
 
     fun playbackFrames(): List<RadarFrameAsset> =
@@ -173,43 +187,93 @@ class RadarFramePipeline(
         _session.value = null
     }
 
-    private suspend fun downloadOne(
+    private suspend fun downloadMosaic(
         host: String,
         frame: RainViewerFrame,
         footprint: RadarFootprint,
     ) {
-        val key = RadarImages.frameCacheKey(frame.path, footprint)
+        val frameKey = RadarImages.frameCacheKey(frame.path, footprint)
         mutex.withLock {
-            cache[key]?.takeIf { !it.isRecycled }?.let { bmp ->
+            frameCache[frameKey]?.takeIf { !it.isRecycled }?.let { bmp ->
                 updateFrame(frame.time) {
-                    it.copy(status = RadarFrameStatus.READY, bitmap = bmp, url = centeredUrl(host, frame, footprint))
+                    it.copy(
+                        status = RadarFrameStatus.READY,
+                        bitmap = bmp,
+                        url = mosaicLabel(host, frame.path, footprint),
+                    )
                 }
                 return
             }
         }
         updateFrame(frame.time) {
-            it.copy(status = RadarFrameStatus.LOADING, url = centeredUrl(host, frame, footprint))
+            it.copy(
+                status = RadarFrameStatus.LOADING,
+                url = mosaicLabel(host, frame.path, footprint),
+            )
+        }
+
+        val tiles = footprint.tiles
+        if (tiles.isEmpty()) {
+            updateFrame(frame.time) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
+            return
+        }
+
+        val decoded = ArrayList<Bitmap>(tiles.size)
+        for (tile in tiles) {
+            val bmp = fetchTile(host, frame.path, tile, footprint.tileSizePx)
+            if (bmp == null) {
+                updateFrame(frame.time) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
+                return
+            }
+            decoded.add(bmp)
+        }
+
+        val mosaic = try {
+            withContext(Dispatchers.Default) {
+                stitcher(footprint, decoded)
+            }
+        } catch (_: Exception) {
+            updateFrame(frame.time) { it.copy(status = RadarFrameStatus.FAILED, bitmap = null) }
+            return
+        }
+
+        mutex.withLock { putFrameCache(frameKey, mosaic) }
+        updateFrame(frame.time) {
+            it.copy(
+                status = RadarFrameStatus.READY,
+                bitmap = mosaic,
+                url = mosaicLabel(host, frame.path, footprint),
+            )
+        }
+    }
+
+    private suspend fun fetchTile(
+        host: String,
+        path: String,
+        tile: RadarTileCoord,
+        sizePx: Int,
+    ): Bitmap? {
+        val key = RadarImages.tileCacheKey(path, tile.z, tile.x, tile.y, sizePx)
+        mutex.withLock {
+            tileCache[key]?.takeIf { !it.isRecycled }?.let { return it }
         }
 
         var lastError: Exception? = null
         repeat(maxRetries + 1) { attempt ->
             try {
-                val url = centeredUrl(host, frame, footprint)
+                val url = RadarImages.tileUrl(host, path, tile.z, tile.x, tile.y, sizePx)
                 val bitmap = withContext(Dispatchers.IO) {
                     val req = Request.Builder().url(url).get().build()
                     okHttp.newCall(req).execute().use { resp ->
+                        if (resp.code == 429) error("HTTP 429")
                         if (!resp.isSuccessful) error("HTTP ${resp.code}")
                         val bytes = resp.body?.bytes() ?: error("empty body")
                         decoder.decode(bytes) ?: error("decode failed")
                     }
                 }
-                mutex.withLock {
-                    putCache(key, bitmap)
-                }
-                updateFrame(frame.time) {
-                    it.copy(status = RadarFrameStatus.READY, bitmap = bitmap, url = url)
-                }
-                return
+                networkTileFetches++
+                mutex.withLock { putTileCache(key, bitmap) }
+                return bitmap
             } catch (e: Exception) {
                 lastError = e
                 if (attempt < maxRetries) {
@@ -217,22 +281,13 @@ class RadarFramePipeline(
                 }
             }
         }
-        updateFrame(frame.time) {
-            it.copy(status = RadarFrameStatus.FAILED, bitmap = null)
-        }
         @Suppress("UNUSED_EXPRESSION")
         lastError
+        return null
     }
 
-    private fun centeredUrl(host: String, frame: RainViewerFrame, footprint: RadarFootprint): String =
-        RadarImages.centeredImageUrl(
-            host = host,
-            path = frame.path,
-            zoom = footprint.zoom,
-            latitude = footprint.centerLat,
-            longitude = footprint.centerLon,
-            sizePx = footprint.sizePx,
-        )
+    private fun mosaicLabel(host: String, path: String, footprint: RadarFootprint): String =
+        "mosaic:$host$path z${footprint.zoom} ${footprint.tilesX}x${footprint.tilesY}"
 
     private fun updateFrame(time: Long, transform: (RadarFrameAsset) -> RadarFrameAsset) {
         val sess = _session.value ?: return
@@ -243,12 +298,19 @@ class RadarFramePipeline(
         _session.value = sess.copy(frames = updated, preparing = preparing)
     }
 
-    private fun putCache(key: String, bitmap: Bitmap) {
-        cache[key] = bitmap
-        while (cache.size > maxCacheEntries) {
-            val eldest = cache.entries.iterator().next()
-            cache.remove(eldest.key)
-            // Do not recycle — may still be displayed
+    private fun putFrameCache(key: String, bitmap: Bitmap) {
+        frameCache[key] = bitmap
+        while (frameCache.size > maxFrameCacheEntries) {
+            val eldest = frameCache.entries.iterator().next()
+            frameCache.remove(eldest.key)
+        }
+    }
+
+    private fun putTileCache(key: String, bitmap: Bitmap) {
+        tileCache[key] = bitmap
+        while (tileCache.size > maxTileCacheEntries) {
+            val eldest = tileCache.entries.iterator().next()
+            tileCache.remove(eldest.key)
         }
     }
 }

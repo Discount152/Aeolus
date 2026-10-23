@@ -2,6 +2,20 @@ package com.discount152.aeolus.ui.state
 
 import com.discount152.aeolus.domain.models.WeatherBundle
 
+/** User-facing copy for provider / connectivity empty states. Never expose HTTP 429. */
+object WeatherCopy {
+    const val PROVIDER_BUSY = "WEATHER SERVICE TEMPORARILY BUSY"
+    const val PROVIDER_BUSY_HINT = "Try again shortly."
+    const val GENERIC_UNAVAILABLE = "WEATHER DATA TEMPORARILY UNAVAILABLE"
+    const val OFFLINE_NO_CACHE = "OFFLINE · NO SAVED FORECAST"
+    const val FORECAST_TEMPORARILY_UNAVAILABLE = "FORECAST TEMPORARILY UNAVAILABLE"
+    const val PRECIPITATION_UNAVAILABLE = "PRECIPITATION DATA UNAVAILABLE"
+    const val MANUAL_RETRY_GUARD_MS = 2_000L
+
+    fun allowManualRetry(lastAttemptEpochMs: Long, nowEpochMs: Long): Boolean =
+        nowEpochMs - lastAttemptEpochMs >= MANUAL_RETRY_GUARD_MS
+}
+
 enum class ConnectivityPresentation {
     LIVE,
     REFRESHING_WITH_CACHE,

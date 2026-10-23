@@ -68,7 +68,11 @@ class WeatherRepository(
 
     fun cachedOrNull(locationId: String): WeatherBundle? = cache.read(locationId)
 
-    fun cachedFor(location: GeoLocation): WeatherBundle? = readCachedBundle(location)
+    fun cachedFor(location: GeoLocation): WeatherBundle? =
+        readCachedBundle(location) ?: readMatchingLastKnownGood(location)
+
+    /** True while [getWeather] holds the repository mutex (core Open-Meteo work). */
+    fun isGetWeatherInFlight(): Boolean = mutex.isLocked
 
     /**
      * Load disk cache into shared state without network.
@@ -77,7 +81,7 @@ class WeatherRepository(
      * @param markStale true only when refresh failed or offline — not while a live refresh is pending.
      */
     fun hydrateFromCache(location: GeoLocation, markStale: Boolean = false): WeatherBundle? {
-        val raw = readCachedBundle(location) ?: return null
+        val raw = readCachedBundle(location) ?: readMatchingLastKnownGood(location) ?: return null
         // Only publish cache that belongs to the requested location (or a true nearest for non-ephemeral).
         val requestedStable = LocationIdentity.stableId(location)
         val bundleStable = LocationIdentity.stableId(raw.location)
@@ -177,15 +181,26 @@ class WeatherRepository(
                         )
                         kept
                     } else {
-                        if (prior != null) {
+                        val matchingLkg = readMatchingLastKnownGood(stable)?.let { enrichSkySummaries(it) }
+                            ?.copy(fromCache = true, stale = true)
+                        if (matchingLkg != null) {
+                            _weather.value = matchingLkg
                             android.util.Log.i(
                                 LastKnownGoodStore.TAG,
-                                "live_refresh_failed: cleared_wrong_location_prior " +
-                                    "priorId=${prior.location.id} requestedId=${stable.id}",
+                                "live_refresh_failed: hydrated_matching_lkg locationId=${matchingLkg.location.id}",
                             )
+                            matchingLkg
+                        } else {
+                            if (prior != null) {
+                                android.util.Log.i(
+                                    LastKnownGoodStore.TAG,
+                                    "live_refresh_failed: cleared_wrong_location_prior " +
+                                        "priorId=${prior.location.id} requestedId=${stable.id}",
+                                )
+                            }
+                            _weather.value = null
+                            throw e
                         }
-                        _weather.value = null
-                        throw e
                     }
                 }
             }
@@ -202,6 +217,19 @@ class WeatherRepository(
         cache.read(location.id)?.let { return it }
         if (LocationIdentity.isEphemeralActive(location)) return null
         return cache.findNearest(location)
+    }
+
+    /**
+     * Last-known-good is a boot snapshot, not a neighbor lookup.
+     * Only the requested [stableId] may be reused — never location A's LKG under B.
+     */
+    private fun readMatchingLastKnownGood(location: GeoLocation): WeatherBundle? {
+        val snap = lastKnownGoodStore.read() ?: return null
+        if (LocationIdentity.stableId(snap.location) != LocationIdentity.stableId(location)) {
+            return null
+        }
+        if (!isCoherentLiveBundle(snap.bundle)) return null
+        return snap.bundle
     }
 
     private suspend fun fetchLive(location: GeoLocation): WeatherBundle = coroutineScope {

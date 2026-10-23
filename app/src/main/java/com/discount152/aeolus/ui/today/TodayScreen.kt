@@ -45,6 +45,7 @@ import com.discount152.aeolus.ui.components.MetricTile
 import com.discount152.aeolus.ui.components.StaleBanner
 import com.discount152.aeolus.ui.components.UpdatingBanner
 import com.discount152.aeolus.ui.state.ConnectivityPresentation
+import com.discount152.aeolus.ui.state.WeatherCopy
 import com.discount152.aeolus.ui.components.formatDistance
 import com.discount152.aeolus.ui.components.formatPrecip
 import com.discount152.aeolus.ui.components.formatTemp
@@ -145,7 +146,8 @@ fun TodayScreen(
             state.connectivity == ConnectivityPresentation.ONLINE_ERROR_NO_CACHE &&
                 bundle == null -> {
                 ErrorRetry(
-                    message = "WEATHER DATA TEMPORARILY UNAVAILABLE",
+                    message = state.error ?: WeatherCopy.PROVIDER_BUSY,
+                    detail = WeatherCopy.PROVIDER_BUSY_HINT,
                     onRetry = { vm.refresh() },
                 )
             }

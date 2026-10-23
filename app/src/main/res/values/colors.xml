@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="phosphor_green">#FF39FF88</color>
+    <color name="terminal_background">#FF060A08</color>
+    <color name="terminal_elevated">#FF0B110E</color>
+</resources>

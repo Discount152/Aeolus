@@ -104,6 +104,86 @@ class MapTimezoneTest {
     }
 
     @Test
+    fun parseZone_rejectsAutoAndBlank() {
+        assertThat(MapTimezone.parseZone("auto")).isNull()
+        assertThat(MapTimezone.parseZone("AUTO")).isNull()
+        assertThat(MapTimezone.parseZone("")).isNull()
+        assertThat(MapTimezone.parseZone(null)).isNull()
+        assertThat(MapTimezone.usableIana("auto")).isNull()
+        assertThat(MapTimezone.usableIana("Europe/Istanbul")).isEqualTo("Europe/Istanbul")
+        assertThat(MapTimezone.usableIana("+03:00")).isNull()
+    }
+
+    @Test
+    fun viewedLocation_autoFallsBackToDevice() {
+        val z = MapTimezone.resolveZoneId(
+            MapTimezoneMode.VIEWED_LOCATION,
+            viewedZoneId = "auto",
+            homeZoneId = "Europe/Istanbul",
+            customZoneId = null,
+            deviceZoneId = ZoneId.of("Europe/Amsterdam"),
+        )
+        assertThat(z.id).isEqualTo("Europe/Amsterdam")
+    }
+
+    @Test
+    fun resolveViewedIana_anamurIsIstanbul_notAmsterdam() {
+        // Anamur / Aydıncık camera from F reject 20261023-232500-01-map
+        val zone = MapTimezone.resolveViewedIana(
+            cameraLat = 36.075,
+            cameraLon = 32.836,
+            locationZoneId = "Europe/Amsterdam",
+            locationLat = 53.219,
+            locationLon = 6.567,
+        )
+        assertThat(zone).isEqualTo("Europe/Istanbul")
+        assertThat(MapTimezone.shortLabel(ZoneId.of(zone))).isNotEqualTo("Amsterdam")
+    }
+
+    @Test
+    fun resolveViewedIana_pinWithWrongCityTz_usesCamera() {
+        val zone = MapTimezone.resolveViewedIana(
+            cameraLat = 36.075,
+            cameraLon = 32.836,
+            locationZoneId = "Europe/Amsterdam",
+            locationLat = 36.075,
+            locationLon = 32.836,
+        )
+        assertThat(zone).isEqualTo("Europe/Istanbul")
+    }
+
+    @Test
+    fun resolveViewedIana_pinAuto_usesCameraNotDevice() {
+        val zone = MapTimezone.resolveViewedIana(
+            cameraLat = 36.075,
+            cameraLon = 32.836,
+            locationZoneId = "auto",
+            locationLat = 36.075,
+            locationLon = 32.836,
+        )
+        assertThat(zone).isEqualTo("Europe/Istanbul")
+    }
+
+    @Test
+    fun resolveViewedIana_nearbyCityKeepsLocationZone() {
+        val zone = MapTimezone.resolveViewedIana(
+            cameraLat = 53.22,
+            cameraLon = 6.58,
+            locationZoneId = "Europe/Amsterdam",
+            locationLat = 53.219,
+            locationLon = 6.567,
+        )
+        assertThat(zone).isEqualTo("Europe/Amsterdam")
+    }
+
+    @Test
+    fun ianaForCoordinates_qaCameras() {
+        assertThat(MapTimezone.ianaForCoordinates(36.76667, 31.38889)).isEqualTo("Europe/Istanbul")
+        assertThat(MapTimezone.ianaForCoordinates(53.21917, 6.56667)).isEqualTo("Europe/Amsterdam")
+        assertThat(MapTimezone.ianaForCoordinates(53.55, 9.99)).isEqualTo("Europe/Berlin")
+    }
+
+    @Test
     fun menuLabels_areHumanReadable() {
         val label = MapTimezone.modeMenuLabel(
             MapTimezoneMode.HOME,

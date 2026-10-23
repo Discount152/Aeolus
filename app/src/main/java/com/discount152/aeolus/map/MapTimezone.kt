@@ -124,8 +124,78 @@ object MapTimezone {
         return ZoneOffset.ofHours(hours)
     }
 
-    fun parseZone(id: String?): ZoneId? =
-        id?.takeIf { it.isNotBlank() }?.let {
-            runCatching { ZoneId.of(it) }.getOrNull()
+    /**
+     * Real IANA id only. Rejects blank, `auto` (map-pin sentinel), and unparseable values.
+     */
+    fun usableIana(id: String?): String? {
+        val zone = parseZone(id) ?: return null
+        if (zone is ZoneOffset) return null
+        return zone.id
+    }
+
+    /**
+     * VIEWED-mode zone for the camera. Location TZ is used only when the camera is still
+     * on that pin/city. Otherwise a local geographic guess — never the device zone, and
+     * never a leftover city after a long pan (Amsterdam over Anamur).
+     */
+    fun resolveViewedIana(
+        cameraLat: Double,
+        cameraLon: Double,
+        locationZoneId: String? = null,
+        locationLat: Double? = null,
+        locationLon: Double? = null,
+        maxLocationDistanceDeg: Double = 2.0,
+    ): String {
+        val geo = ianaForCoordinates(cameraLat, cameraLon)
+        val locZone = usableIana(locationZoneId)
+        if (locZone != null && locationLat != null && locationLon != null) {
+            val dLat = cameraLat - locationLat
+            val dLon = RadarViewport.normalizeLon(cameraLon) - RadarViewport.normalizeLon(locationLon)
+            if (dLat * dLat + dLon * dLon <= maxLocationDistanceDeg * maxLocationDistanceDeg) {
+                // Trust a nearby city TZ only when geography does not already know a different IANA
+                // (harness/OM can stamp Europe/Amsterdam on an Anamur pin).
+                val geoZone = parseZone(geo)
+                if (locZone == geo) return locZone
+                if (geoZone is ZoneOffset) return locZone
+            }
         }
+        return geo
+    }
+
+    /**
+     * Offline camera → IANA (or a longitude offset when the land box is unknown).
+     * Specific boxes first so NL/Turkey QA cameras do not share a CET leftover.
+     */
+    fun ianaForCoordinates(latitude: Double, longitude: Double): String {
+        val lon = RadarViewport.normalizeLon(longitude)
+        val lat = latitude
+        return when {
+            inBox(lat, lon, 35.8, 42.4, 25.6, 44.8) -> "Europe/Istanbul"
+            inBox(lat, lon, 34.4, 35.8, 32.0, 34.9) -> "Asia/Nicosia"
+            inBox(lat, lon, 34.7, 41.8, 19.3, 28.4) -> "Europe/Athens"
+            inBox(lat, lon, 50.7, 53.7, 3.2, 7.3) -> "Europe/Amsterdam"
+            inBox(lat, lon, 49.4, 51.6, 2.5, 6.4) -> "Europe/Brussels"
+            inBox(lat, lon, 47.2, 55.1, 5.8, 15.1) -> "Europe/Berlin"
+            inBox(lat, lon, 49.9, 58.8, -8.2, 1.8) -> "Europe/London"
+            inBox(lat, lon, 41.0, 51.2, -5.2, 8.4) -> "Europe/Paris"
+            inBox(lat, lon, 36.0, 43.8, -9.5, 3.4) -> "Europe/Madrid"
+            inBox(lat, lon, 36.6, 47.1, 6.6, 18.6) -> "Europe/Rome"
+            else -> approximateZoneFromLongitude(lon).id
+        }
+    }
+
+    fun parseZone(id: String?): ZoneId? {
+        val raw = id?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        if (raw.equals("auto", ignoreCase = true)) return null
+        return runCatching { ZoneId.of(raw) }.getOrNull()
+    }
+
+    private fun inBox(
+        lat: Double,
+        lon: Double,
+        latSouth: Double,
+        latNorth: Double,
+        lonWest: Double,
+        lonEast: Double,
+    ): Boolean = lat in latSouth..latNorth && lon in lonWest..lonEast
 }

@@ -122,6 +122,22 @@ class MapCoveredSkipTest {
     }
 
     @Test
+    fun remount_doesNotBlankPlayableClock() {
+        assertThat(MapCoveredSkip.shouldBlankPublishedTimeline(currentHasReadyFrame = true)).isFalse()
+        assertThat(MapCoveredSkip.shouldBlankPublishedTimeline(currentHasReadyFrame = false)).isTrue()
+    }
+
+    @Test
+    fun preparingPlaceholder_onlyWhenNoFrame() {
+        assertThat(MapCoveredSkip.showPreparingPlaceholder(hasDisplayedFrame = true, preparing = true))
+            .isFalse()
+        assertThat(MapCoveredSkip.showPreparingPlaceholder(hasDisplayedFrame = false, preparing = true))
+            .isTrue()
+        assertThat(MapCoveredSkip.showPreparingPlaceholder(hasDisplayedFrame = false, preparing = false))
+            .isFalse()
+    }
+
+    @Test
     fun mapForecast_yieldsWhileCoreInFlightOrCooldown() {
         assertThat(MapCoveredSkip.shouldStartMapForecast(coreGetWeatherInFlight = true, gateCoolingDown = false))
             .isFalse()

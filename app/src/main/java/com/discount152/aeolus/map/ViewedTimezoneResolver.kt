@@ -10,14 +10,13 @@ import kotlin.math.floor
 /**
  * Resolves IANA ZoneId for the viewed map center via Open-Meteo `timezone=auto`.
  * Spatially cached so camera pans do not spam the API.
- * Offline: returns last known zone for nearby cell, else null (no longitude invention).
+ * Offline: nearby cached cell only — never a distant lastKnown (Amsterdam over Anamur).
  */
 class ViewedTimezoneResolver(
     private val forecastApi: OpenMeteoForecastApi,
 ) {
     private val mutex = Mutex()
     private val cache = LinkedHashMap<Long, String>(64, 0.75f, true)
-    private var lastKnownZoneId: String? = null
 
     suspend fun resolve(lat: Double, lon: Double, allowNetwork: Boolean): ZoneId? =
         mutex.withLock {
@@ -31,15 +30,14 @@ class ViewedTimezoneResolver(
                 }
             }
             if (!allowNetwork) {
-                Log.d(TAG, "offline miss cell=$key lastKnown=$lastKnownZoneId")
-                return MapTimezone.parseZone(lastKnownZoneId)
+                Log.d(TAG, "offline miss cell=$key")
+                return null
             }
             return try {
                 val resp = forecastApi.timezoneAt(latitude = lat, longitude = lon)
-                val tz = resp.timezone?.takeIf { it.isNotBlank() }
+                val tz = MapTimezone.usableIana(resp.timezone)
                 if (tz != null) {
                     cache[key] = tz
-                    lastKnownZoneId = tz
                     while (cache.size > 48) {
                         val eldest = cache.entries.iterator().next()
                         cache.remove(eldest.key)
@@ -47,11 +45,11 @@ class ViewedTimezoneResolver(
                     Log.d(TAG, "resolved $tz for $lat,$lon")
                     MapTimezone.parseZone(tz)
                 } else {
-                    MapTimezone.parseZone(lastKnownZoneId)
+                    null
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "resolve failed lat=$lat lon=$lon", e)
-                MapTimezone.parseZone(lastKnownZoneId)
+                null
             }
         }
 

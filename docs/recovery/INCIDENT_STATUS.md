@@ -15,7 +15,7 @@ Release state: **BROKEN**. 1.0.9 is a candidate, not a known-good base.
 |------|---------|--------|----------|
 | **Known-good** (last demonstrably usable core weather) | 1.0.6 / versionCode 7 | `122f07c` (`122f07cccf1048e95580d9c7956fe658939376d2`) | Pixel `57261FDCQ0011Q`: after Open-Meteo cooldown, live fetch produced a coherent bundle, wrote cache/LKG, UI went **LIVE**. Same session also proved the false-OFFLINE banner and wrong-location retain under 429. APK `dist/Aeolus-v1.0.6.apk`. |
 | **Candidate** (current recovery tip — unproven) | 1.0.9 / versionCode 10 | `8ad7dc7` (`8ad7dc730ab01d847b0797d04cf67729bd540a1e`) | Diagnosis must-ship landed (stale/LKG, busy copy, covered-skip). Unit tests 128 / lintDebug / assembleRelease claimed. **Healthy-provider Today/Forecast/Models/LKG/offline matrix was not run.** Last install report: busy empty-online, LKG missing. APK `dist/Aeolus-v1.0.9.apk`. |
-| Integration HEAD | same as candidate + this doc | `recovery/integration` branched from `8ad7dc7` | Tracking branch only. Does **not** promote 1.0.9 to known-good. |
+| Integration HEAD | candidate + this doc | `recovery/integration` (from `8ad7dc7`) | Tracking PR [#11](https://github.com/Discount152/Aeolus/pull/11) — **not a release**. Does **not** promote 1.0.9 to known-good. |
 
 1.0.7 `c726dfe` / 1.0.8 `a67a042` are **not** known-good. Live bisect of “first bad LIVE city weather” is still blocked by provider 429. The first product change that makes a blank Today the default under 429 + empty disk is `c726dfe` (gate + wrong-location ban). That ban is **correct safety**; it is not the live trigger.
 
@@ -125,6 +125,7 @@ Capture: Project store `internal/aeolus-1.0.9-qa/` (and 1.0.8 `internal/aeolus-1
 ## Preserve (do not touch)
 
 - **PR #10** — OPEN, MERGEABLE, head `cursor/aeolus-1.0.9-must-ship-2996`, base `cursor/aeolus-1.0.8-repair-36b5`. Leave open. Do not merge as VALIDATED_RELEASE. Do not force-push that branch.
+- **PR #11** — tracking-only incident status on `recovery/integration`. Not a release.
 - **APKs** `D:\Project Aeolus\dist\`:
   - `Aeolus-v1.0.0.apk` … `Aeolus-v1.0.6.apk` (1.0.6 SHA-256 `2f97a926b9356996722c23190a4481136559b94dce36f0e31fc89d89fdb1d258`)
   - `Aeolus-v1.0.7.apk` `a4ada65d6ce68fae831d0b1ab4eeb896e4d55d34ff4c2f46bc2d37454a82d586`

@@ -24,7 +24,7 @@ $env:ANDROID_HOME = "D:\Android\Sdk"
 
 Signed release APK (after local keystore setup):
 
-`dist/Aeolus-v1.0.3.apk` (prior v1.0.0–v1.0.2 APKs retained alongside)
+`dist/Aeolus-v1.0.4.apk` (prior v1.0.0–v1.0.3 APKs retained alongside)
 
 ## Privacy
 

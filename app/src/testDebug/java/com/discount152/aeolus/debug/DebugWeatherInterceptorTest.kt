@@ -120,6 +120,19 @@ class DebugWeatherInterceptorTest {
     }
 
     @Test
+    fun geocoding_queryReturnsMatchingCity() {
+        DebugWeatherHarness.scenario = DebugWeatherScenario.SUCCESS_FULL
+        val http = client()
+        val gro = http.newCall(geocodeRequest("Groningen")).execute().body!!.string()
+        val side = http.newCall(geocodeRequest("Side")).execute().body!!.string()
+        assertThat(gro).contains("\"name\": \"Groningen\"")
+        assertThat(gro).doesNotContain("\"name\": \"Side\"")
+        assertThat(side).contains("\"name\": \"Side\"")
+        assertThat(side).contains("Europe/Istanbul")
+        assertThat(side).doesNotContain("\"name\": \"Groningen\"")
+    }
+
+    @Test
     fun slowSuccess_sleepsThen200() {
         DebugWeatherHarness.scenario = DebugWeatherScenario.SLOW_SUCCESS
         DebugWeatherHarness.slowDelayMs = 40L
@@ -139,6 +152,10 @@ class DebugWeatherInterceptorTest {
 
     private fun ensembleRequest(): Request = omRequest(
         "https://ensemble-api.open-meteo.com/v1/ensemble?latitude=53.22&longitude=6.57&models=ecmwf_ifs025",
+    )
+
+    private fun geocodeRequest(name: String): Request = omRequest(
+        "https://geocoding-api.open-meteo.com/v1/search?name=$name&count=10&language=en&format=json",
     )
 
     private fun omRequest(url: String): Request = Request.Builder().url(url).build()

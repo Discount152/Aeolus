@@ -14,7 +14,7 @@ Default scenario is `LIVE` (passthrough).
 
 | Scenario | Transport | Expected core path |
 |----------|-----------|--------------------|
-| `SUCCESS_FULL` | 200 all models + ensemble + geocode | Live coherent; writes cache + LKG |
+| `SUCCESS_FULL` | 200 all models + ensemble + geocode (Groningen / Side by query) | Live coherent; writes cache + LKG |
 | `SUCCESS_CORE_ONLY` | 200 ICON only; ECMWF/GFS/ensemble 500 | Live coherent; `missingModels` ECMWF+GFS |
 | `HTTP_429` | 429 + `Retry-After: 1` | Gate retries then stale/LKG or busy |
 | `HTTP_500` | 500 all OM | Incoherent → stale/LKG or throw |

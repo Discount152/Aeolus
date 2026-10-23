@@ -62,7 +62,7 @@ class DebugWeatherInterceptor(
             ?: "Europe/Amsterdam"
 
         if (host.contains("geocoding-api") || path.contains("v1/search")) {
-            return status(request, 200, "OK", DebugWeatherFixtures.geocodingBody())
+            return status(request, 200, "OK", DebugWeatherFixtures.geocodingBody(url.queryParameter("name").orEmpty()))
         }
         if (host.contains("ensemble-api") || path.contains("v1/ensemble")) {
             if (failEnsemble) {

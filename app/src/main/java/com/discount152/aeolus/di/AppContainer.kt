@@ -8,10 +8,12 @@ import com.discount152.aeolus.BuildConfig
 import com.discount152.aeolus.data.cache.ForecastCache
 import com.discount152.aeolus.data.cache.ForecastSnapshotStore
 import com.discount152.aeolus.data.cache.LastKnownGoodStore
+import com.discount152.aeolus.data.network.OpenMeteoClientConfigurator
 import com.discount152.aeolus.data.network.OpenMeteoEnsembleApi
 import com.discount152.aeolus.data.network.OpenMeteoForecastApi
 import com.discount152.aeolus.data.network.OpenMeteoGate
 import com.discount152.aeolus.data.network.OpenMeteoGeocodingApi
+import com.discount152.aeolus.data.network.ProductionOpenMeteoClientConfigurator
 import com.discount152.aeolus.data.network.RainViewerApi
 import com.discount152.aeolus.data.prefs.SettingsRepository
 import com.discount152.aeolus.data.repository.WeatherRepository
@@ -26,7 +28,10 @@ import java.util.concurrent.TimeUnit
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "aeolus_preferences")
 
-class AppContainer(context: Context) {
+class AppContainer(
+    context: Context,
+    openMeteoConfigurator: OpenMeteoClientConfigurator = ProductionOpenMeteoClientConfigurator,
+) {
     val applicationContext: Context = context.applicationContext
 
     val json: Json = Json {
@@ -58,6 +63,7 @@ class AppContainer(context: Context) {
     /** Open-Meteo HTTP client — max 2 concurrent, Retry-After / backoff on 429. */
     val openMeteoOkHttpClient: OkHttpClient = okHttpClient.newBuilder()
         .addInterceptor(openMeteoGate.interceptor())
+        .let { openMeteoConfigurator.install(it) }
         .build()
 
     private val jsonMediaType = "application/json".toMediaType()

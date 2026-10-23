@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import com.discount152.aeolus.data.cache.LastKnownGoodStore
 import com.discount152.aeolus.di.AppContainer
+import com.discount152.aeolus.di.createAppContainer
 import org.maplibre.android.MapLibre
 import java.io.File
 
@@ -21,6 +22,6 @@ class AeolusApp : Application() {
                 "path=${lkg.absolutePath}",
         )
         MapLibre.getInstance(this)
-        appContainer = AppContainer(applicationContext)
+        appContainer = createAppContainer(applicationContext)
     }
 }

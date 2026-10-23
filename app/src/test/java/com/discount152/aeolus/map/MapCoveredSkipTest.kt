@@ -113,6 +113,31 @@ class MapCoveredSkipTest {
     }
 
     @Test
+    fun worldForecastFootprint_doesNotAdequatelyCoverCity() {
+        val world = ForecastPrecipFootprint(-80.0, 80.0, -160.0, 160.0)
+        val city = ForecastPrecipFootprint(52.5, 54.0, 6.0, 7.5)
+        assertThat(world.coversVisible(52.9, 53.4, 6.4, 6.9)).isTrue()
+        assertThat(world.coversVisibleAdequately(52.9, 53.4, 6.4, 6.9)).isFalse()
+        assertThat(city.coversVisibleAdequately(52.9, 53.4, 6.4, 6.9)).isTrue()
+    }
+
+    @Test
+    fun remount_doesNotBlankPlayableClock() {
+        assertThat(MapCoveredSkip.shouldBlankPublishedTimeline(currentHasReadyFrame = true)).isFalse()
+        assertThat(MapCoveredSkip.shouldBlankPublishedTimeline(currentHasReadyFrame = false)).isTrue()
+    }
+
+    @Test
+    fun preparingPlaceholder_onlyWhenNoFrame() {
+        assertThat(MapCoveredSkip.showPreparingPlaceholder(hasDisplayedFrame = true, preparing = true))
+            .isFalse()
+        assertThat(MapCoveredSkip.showPreparingPlaceholder(hasDisplayedFrame = false, preparing = true))
+            .isTrue()
+        assertThat(MapCoveredSkip.showPreparingPlaceholder(hasDisplayedFrame = false, preparing = false))
+            .isFalse()
+    }
+
+    @Test
     fun mapForecast_yieldsWhileCoreInFlightOrCooldown() {
         assertThat(MapCoveredSkip.shouldStartMapForecast(coreGetWeatherInFlight = true, gateCoolingDown = false))
             .isFalse()

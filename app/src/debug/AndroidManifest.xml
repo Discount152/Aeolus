@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver
+            android:name=".debug.DebugWeatherHarnessReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.discount152.aeolus.debug.SET_WEATHER_SCENARIO" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

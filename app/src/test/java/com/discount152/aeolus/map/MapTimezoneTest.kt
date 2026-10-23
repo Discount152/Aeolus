@@ -81,4 +81,37 @@ class MapTimezoneTest {
         assertThat(k1).doesNotContain("Europe")
         assertThat(k1).doesNotContain("UTC")
     }
+
+    @Test
+    fun primaryPresentation_isWallClock_notUtcPlusArithmetic() {
+        val label = MapTimezone.formatInstant(
+            Instant.parse("2026-07-15T15:40:00Z").epochSecond,
+            ZoneId.of("Europe/Istanbul"),
+        )
+        assertThat(label).startsWith("18:40")
+        assertThat(label).doesNotContain("UTC+")
+        assertThat(label).doesNotContain("UTC +")
+    }
+
+    @Test
+    fun midnightCrossing_appendsDate() {
+        val zone = ZoneId.of("Europe/Amsterdam")
+        val before = Instant.parse("2026-07-15T21:40:00Z").epochSecond // 23:40 CEST
+        val after = Instant.parse("2026-07-15T22:30:00Z").epochSecond // 00:30 Thu 16
+        val label = MapTimezone.formatInstant(after, zone, previousEpochSeconds = before)
+        assertThat(label).startsWith("00:30")
+        assertThat(label).contains("16") // day-of-month in date suffix
+    }
+
+    @Test
+    fun menuLabels_areHumanReadable() {
+        val label = MapTimezone.modeMenuLabel(
+            MapTimezoneMode.HOME,
+            viewedZoneId = "Europe/Istanbul",
+            homeZoneId = "Europe/Amsterdam",
+            customZoneId = null,
+        )
+        assertThat(label).contains("Home")
+        assertThat(label).contains("Europe/Amsterdam")
+    }
 }

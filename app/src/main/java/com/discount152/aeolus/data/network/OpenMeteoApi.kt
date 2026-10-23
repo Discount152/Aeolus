@@ -30,7 +30,7 @@ interface OpenMeteoForecastApi {
 
     /**
      * Batched forecast for many coordinates in one request (comma-separated [latitude] / [longitude]).
-     * Uses Open-Meteo **best_match** model selection for coherent regional output.
+     * Default model is ICON Seamless for a coherent map raster (caller may override).
      */
     @GET("v1/forecast")
     suspend fun forecastMultiLocation(
@@ -38,10 +38,20 @@ interface OpenMeteoForecastApi {
         @Query("longitude") longitude: String,
         @Query("timezone") timezone: String = "UTC",
         @Query("forecast_days") forecastDays: Int = 2,
-        @Query("models") models: String = "best_match",
+        @Query("models") models: String = "icon_seamless",
         @Query("hourly") hourly: String = "precipitation",
         @Query("precipitation_unit") precipitationUnit: String = "mm",
     ): List<OpenMeteoForecastResponse>
+
+    /** Lightweight timezone resolve via Open-Meteo `timezone=auto` for a single point. */
+    @GET("v1/forecast")
+    suspend fun timezoneAt(
+        @Query("latitude") latitude: Double,
+        @Query("longitude") longitude: Double,
+        @Query("timezone") timezone: String = "auto",
+        @Query("forecast_days") forecastDays: Int = 1,
+        @Query("hourly") hourly: String = "temperature_2m",
+    ): OpenMeteoForecastResponse
 }
 
 interface OpenMeteoEnsembleApi {

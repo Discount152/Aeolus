@@ -29,7 +29,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -46,14 +45,16 @@ import com.discount152.aeolus.domain.models.GeoLocation
 import com.discount152.aeolus.map.ForecastPrecipFootprint
 import com.discount152.aeolus.map.ForecastPrecipPipeline
 import com.discount152.aeolus.map.MapPlaybackState
-import com.discount152.aeolus.map.MapPrecipMode
 import com.discount152.aeolus.map.MapTimezone
 import com.discount152.aeolus.map.MapTimezoneMode
 import com.discount152.aeolus.map.PrecipLegend
 import com.discount152.aeolus.map.RadarFootprint
 import com.discount152.aeolus.map.RadarFramePipeline
-import com.discount152.aeolus.map.RadarFrameStatus
 import com.discount152.aeolus.map.RadarViewport
+import com.discount152.aeolus.map.UnifiedMapFrame
+import com.discount152.aeolus.map.UnifiedMapTimeline
+import com.discount152.aeolus.map.ViewedTimezoneResolver
+import com.discount152.aeolus.ui.state.ConnectivityPresentation
 import com.discount152.aeolus.ui.state.aeolusContainer
 import com.discount152.aeolus.ui.state.rememberWeatherViewModel
 import com.discount152.aeolus.ui.theme.PhosphorGreen
@@ -63,7 +64,6 @@ import com.discount152.aeolus.ui.theme.TerminalMuted
 import com.discount152.aeolus.ui.theme.TerminalText
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -99,23 +99,22 @@ fun MapScreen(modifier: Modifier = Modifier) {
     val forecastPipeline = remember {
         ForecastPrecipPipeline(container.forecastApi)
     }
+    val tzResolver = remember { ViewedTimezoneResolver(container.forecastApi) }
     val radarSession by radarPipeline.session.collectAsStateWithLifecycle()
     val forecastSession by forecastPipeline.session.collectAsStateWithLifecycle()
 
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var mapReady by remember { mutableStateOf(false) }
     var playback by remember { mutableStateOf(MapPlaybackState.STOPPED) }
-    var precipMode by remember { mutableStateOf(MapPrecipMode.OBSERVED) }
     var overlayOpacity by remember { mutableFloatStateOf(state.radarOpacity) }
     var lastCenteredLocationId by remember { mutableStateOf<String?>(null) }
     var activeRadarFootprint by remember { mutableStateOf<RadarFootprint?>(null) }
     var activeForecastFootprint by remember { mutableStateOf<ForecastPrecipFootprint?>(null) }
-    var playIndex by remember { mutableIntStateOf(0) }
-    var displayedRadarTime by remember { mutableStateOf<Long?>(null) }
-    var displayedForecastTime by remember { mutableStateOf<Long?>(null) }
+    var scrub by remember { mutableFloatStateOf(1f) }
+    var displayed by remember { mutableStateOf<UnifiedMapFrame?>(null) }
     var idleJob by remember { mutableStateOf<Job?>(null) }
     var loadJob by remember { mutableStateOf<Job?>(null) }
-    var viewedZoneId by remember { mutableStateOf<String?>(null) }
+    var viewedZoneId by remember { mutableStateOf<String?>(state.location?.timezone) }
     var showTzDialog by remember { mutableStateOf(false) }
 
     val tzMode by container.settingsRepository.mapTimezoneMode.collectAsStateWithLifecycle(
@@ -127,83 +126,53 @@ fun MapScreen(modifier: Modifier = Modifier) {
     val customTz by container.settingsRepository.customTimezoneId.collectAsStateWithLifecycle(
         initialValue = ZoneId.systemDefault().id,
     )
-
     val displayZone = remember(tzMode, viewedZoneId, homeTz, customTz) {
         MapTimezone.resolveZoneId(tzMode, viewedZoneId, homeTz, customTz)
     }
 
-    val radarReady = remember(radarSession) { radarPipeline.playbackFrames() }
-    val forecastReady = remember(forecastSession) { forecastPipeline.playbackFrames() }
-
-    LaunchedEffect(Unit) {
-        container.settingsRepository.ensureHomeTimezoneInitialized()
+    val timeline = remember(radarSession, forecastSession) {
+        UnifiedMapTimeline.build(
+            observed = radarPipeline.playbackFrames(),
+            observedFootprint = radarSession?.footprint,
+            forecast = forecastPipeline.playbackFrames(),
+            forecastFootprint = forecastSession?.footprint,
+        )
     }
+    val ready = timeline.readyFrames
+    val offlineMap = state.connectivity == ConnectivityPresentation.OFFLINE_WITH_CACHE ||
+        state.connectivity == ConnectivityPresentation.ERROR_NO_CACHE
+
+    LaunchedEffect(Unit) { container.settingsRepository.ensureHomeTimezoneInitialized() }
     LaunchedEffect(state.radarOpacity) { overlayOpacity = state.radarOpacity }
 
-    LaunchedEffect(radarSession?.newestReady?.time, mapReady, precipMode) {
-        if (precipMode != MapPrecipMode.OBSERVED || !mapReady) return@LaunchedEffect
-        val newest = radarSession?.newestReady ?: return@LaunchedEffect
+    LaunchedEffect(timeline.readyFrames.size, mapReady) {
+        if (!mapReady || ready.isEmpty()) return@LaunchedEffect
         if (playback == MapPlaybackState.PLAYING) return@LaunchedEffect
-        displayedRadarTime = newest.time
+        val newestObs = ready.lastOrNull { it.epochSeconds <= timeline.nowEpochSeconds }
+            ?: ready.last()
+        scrub = timeline.scrubPositionFor(newestObs.epochSeconds)
+        displayed = newestObs
         mapView?.getMapAsync { map ->
-            map.style?.let { style ->
-                radarSession?.footprint?.let { fp ->
-                    applyOverlayBitmap(style, newest.bitmap, fp.latNorth, fp.latSouth, fp.lonWest, fp.lonEast, overlayOpacity)
-                }
-            }
+            map.style?.let { applyOverlayBitmap(it, newestObs, overlayOpacity) }
         }
     }
 
-    LaunchedEffect(forecastSession?.readyFrames?.size, mapReady, precipMode) {
-        if (precipMode != MapPrecipMode.FORECAST || !mapReady) return@LaunchedEffect
-        val frames = forecastPipeline.playbackFrames()
-        val first = frames.firstOrNull() ?: return@LaunchedEffect
-        if (playback == MapPlaybackState.PLAYING) return@LaunchedEffect
-        displayedForecastTime = first.hourEpochUtcMs
-        mapView?.getMapAsync { map ->
-            map.style?.let { style ->
-                forecastSession?.footprint?.let { fp ->
-                    applyOverlayBitmap(style, first.bitmap, fp.latNorth, fp.latSouth, fp.lonWest, fp.lonEast, overlayOpacity)
-                }
-            }
-        }
-    }
-
-    LaunchedEffect(playback, precipMode, radarReady, forecastReady) {
+    LaunchedEffect(playback, ready) {
         if (playback != MapPlaybackState.PLAYING) return@LaunchedEffect
         while (playback == MapPlaybackState.PLAYING) {
-            if (precipMode == MapPrecipMode.OBSERVED) {
-                val list = radarPipeline.playbackFrames()
-                if (list.size < 2) {
-                    playback = MapPlaybackState.STOPPED
-                    break
-                }
-                playIndex = (playIndex + 1) % list.size
-                val frame = list[playIndex]
-                displayedRadarTime = frame.time
-                mapView?.getMapAsync { map ->
-                    map.style?.let { style ->
-                        radarSession?.footprint?.let { fp ->
-                            applyOverlayBitmap(style, frame.bitmap, fp.latNorth, fp.latSouth, fp.lonWest, fp.lonEast, overlayOpacity)
-                        }
-                    }
-                }
-            } else {
-                val list = forecastPipeline.playbackFrames()
-                if (list.size < 2) {
-                    playback = MapPlaybackState.STOPPED
-                    break
-                }
-                playIndex = (playIndex + 1) % list.size
-                val frame = list[playIndex]
-                displayedForecastTime = frame.hourEpochUtcMs
-                mapView?.getMapAsync { map ->
-                    map.style?.let { style ->
-                        forecastSession?.footprint?.let { fp ->
-                            applyOverlayBitmap(style, frame.bitmap, fp.latNorth, fp.latSouth, fp.lonWest, fp.lonEast, overlayOpacity)
-                        }
-                    }
-                }
+            val list = timeline.readyFrames
+            if (list.size < 2) {
+                playback = MapPlaybackState.STOPPED
+                break
+            }
+            val current = displayed
+            val idx = list.indexOfFirst { it.epochSeconds == current?.epochSeconds }
+                .takeIf { it >= 0 } ?: 0
+            val next = list[(idx + 1) % list.size]
+            displayed = next
+            scrub = timeline.scrubPositionFor(next.epochSeconds)
+            mapView?.getMapAsync { map ->
+                map.style?.let { applyOverlayBitmap(it, next, overlayOpacity) }
             }
             delay(500)
         }
@@ -244,6 +213,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
             latNorth = latNorth + latPad,
             lonWest = RadarViewport.normalizeLon(lonWest - lonPad),
             lonEast = RadarViewport.normalizeLon(lonEast + lonPad),
+            rasterSizePx = ForecastPrecipPipeline.DEFAULT_RASTER_SIZE_PX,
         )
     }
 
@@ -251,77 +221,53 @@ fun MapScreen(modifier: Modifier = Modifier) {
         val b = map.projection.visibleRegion.latLngBounds
         val centerLat = (b.latitudeSouth + b.latitudeNorth) / 2.0
         val centerLon = RadarViewport.normalizeLon((b.longitudeWest + b.longitudeEast) / 2.0)
-        viewedZoneId = MapTimezone.approximateZoneFromLongitude(centerLon).id
-        // Prefer location timezone when pin is near center
-        state.location?.timezone?.let { viewedZoneId = it }
-
         loadJob?.cancel()
         loadJob = scope.launch {
-            if (precipMode == MapPrecipMode.OBSERVED) {
-                val footprint = RadarViewport.footprintForVisibleBounds(
-                    latSouth = b.latitudeSouth,
-                    latNorth = b.latitudeNorth,
-                    lonWest = b.longitudeWest,
-                    lonEast = b.longitudeEast,
-                )
-                val current = activeRadarFootprint
-                val covered = current != null && current.coversVisible(
-                    b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
-                )
-                if (!covered) {
-                    activeRadarFootprint = footprint
-                    radarPipeline.loadForViewport(footprint)
-                }
-            } else {
-                val footprint = paddedForecastFootprint(
-                    b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
-                )
-                val current = activeForecastFootprint
-                val covered = current != null && current.coversVisible(
-                    b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
-                )
-                if (!covered) {
-                    activeForecastFootprint = footprint
-                    forecastPipeline.loadForViewport(
-                        footprint = footprint,
-                        visibleLatSouth = b.latitudeSouth,
-                        visibleLatNorth = b.latitudeNorth,
-                        visibleLonWest = b.longitudeWest,
-                        visibleLonEast = b.longitudeEast,
-                    )
-                }
-            }
+            val online = state.connectivity != ConnectivityPresentation.OFFLINE_WITH_CACHE &&
+                state.connectivity != ConnectivityPresentation.ERROR_NO_CACHE
+            tzResolver.resolve(centerLat, centerLon, allowNetwork = online)?.let {
+                viewedZoneId = it.id
+            } ?: state.location?.timezone?.let { viewedZoneId = it }
 
+            val radarFp = RadarViewport.footprintForVisibleBounds(
+                b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
+            )
+            val forecastFp = paddedForecastFootprint(
+                b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
+            )
+            val radarCovered = activeRadarFootprint?.coversVisible(
+                b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
+            ) == true
+            val forecastCovered = activeForecastFootprint?.coversVisible(
+                b.latitudeSouth, b.latitudeNorth, b.longitudeWest, b.longitudeEast,
+            ) == true
+            if (!radarCovered) {
+                activeRadarFootprint = radarFp
+                radarPipeline.loadForViewport(radarFp)
+            }
+            if (!forecastCovered) {
+                activeForecastFootprint = forecastFp
+                forecastPipeline.loadForViewport(
+                    footprint = forecastFp,
+                    visibleLatSouth = b.latitudeSouth,
+                    visibleLatNorth = b.latitudeNorth,
+                    visibleLonWest = b.longitudeWest,
+                    visibleLonEast = b.longitudeEast,
+                )
+            }
             if (resumeIfAutoPaused && playback == MapPlaybackState.AUTO_PAUSED_FOR_CAMERA) {
-                val ready = if (precipMode == MapPrecipMode.OBSERVED) {
-                    radarPipeline.session.value?.playable == true
-                } else {
-                    forecastPipeline.session.value?.playable == true
-                }
-                if (ready) {
+                delay(600)
+                if (playback == MapPlaybackState.AUTO_PAUSED_FOR_CAMERA &&
+                    UnifiedMapTimeline.build(
+                        radarPipeline.playbackFrames(),
+                        radarPipeline.session.value?.footprint,
+                        forecastPipeline.playbackFrames(),
+                        forecastPipeline.session.value?.footprint,
+                    ).playable
+                ) {
                     playback = MapPlaybackState.PLAYING
-                } else {
-                    // Wait briefly for frames then resume
-                    delay(800)
-                    val ready2 = if (precipMode == MapPrecipMode.OBSERVED) {
-                        radarPipeline.session.value?.playable == true
-                    } else {
-                        forecastPipeline.session.value?.playable == true
-                    }
-                    if (playback == MapPlaybackState.AUTO_PAUSED_FOR_CAMERA && ready2) {
-                        playback = MapPlaybackState.PLAYING
-                    }
                 }
             }
-        }
-    }
-
-    LaunchedEffect(precipMode, mapReady) {
-        if (!mapReady) return@LaunchedEffect
-        activeRadarFootprint = null
-        activeForecastFootprint = null
-        mapView?.getMapAsync { map ->
-            reloadOverlays(map, resumeIfAutoPaused = false)
         }
     }
 
@@ -344,24 +290,10 @@ fun MapScreen(modifier: Modifier = Modifier) {
     }
 
     fun togglePlay() {
-        val canPlay = if (precipMode == MapPrecipMode.OBSERVED) {
-            radarSession?.playable == true
-        } else {
-            forecastSession?.playable == true
-        }
         when (playback) {
             MapPlaybackState.PLAYING -> playback = MapPlaybackState.USER_PAUSED
-            MapPlaybackState.USER_PAUSED, MapPlaybackState.STOPPED, MapPlaybackState.AUTO_PAUSED_FOR_CAMERA -> {
-                if (!canPlay) return
-                if (precipMode == MapPrecipMode.OBSERVED) {
-                    val list = radarPipeline.playbackFrames()
-                    playIndex = list.indexOfFirst { it.time == displayedRadarTime }
-                        .takeIf { it >= 0 } ?: list.lastIndex.coerceAtLeast(0)
-                } else {
-                    val list = forecastPipeline.playbackFrames()
-                    playIndex = list.indexOfFirst { it.hourEpochUtcMs == displayedForecastTime }
-                        .takeIf { it >= 0 } ?: 0
-                }
+            else -> {
+                if (!timeline.playable) return
                 playback = MapPlaybackState.PLAYING
             }
         }
@@ -370,20 +302,15 @@ fun MapScreen(modifier: Modifier = Modifier) {
     if (showTzDialog) {
         AlertDialog(
             onDismissRequest = { showTzDialog = false },
-            title = { Text("MAP TIME ZONE", fontFamily = FontFamily.Monospace, color = PhosphorGreen) },
+            title = { Text("Map time zone", fontFamily = FontFamily.Monospace, color = PhosphorGreen) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     MapTimezoneMode.entries.forEach { mode ->
                         Text(
-                            text = when (mode) {
-                                MapTimezoneMode.VIEWED_LOCATION -> "VIEWED LOCATION"
-                                MapTimezoneMode.DEVICE -> "DEVICE TIME"
-                                MapTimezoneMode.HOME -> "HOME TIME ($homeTz)"
-                                MapTimezoneMode.UTC -> "UTC"
-                                MapTimezoneMode.CUSTOM -> "CUSTOM ($customTz)"
-                            },
+                            text = MapTimezone.modeMenuLabel(mode, viewedZoneId, homeTz, customTz),
                             color = if (mode == tzMode) PhosphorGreen else TerminalText,
                             fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
@@ -391,13 +318,6 @@ fun MapScreen(modifier: Modifier = Modifier) {
                                         container.settingsRepository.setMapTimezoneMode(mode)
                                         if (mode == MapTimezoneMode.HOME) {
                                             container.settingsRepository.ensureHomeTimezoneInitialized()
-                                        }
-                                        if (mode == MapTimezoneMode.CUSTOM) {
-                                            // Default custom to common zones if unset
-                                            val current = container.settingsRepository.customTimezoneId.first()
-                                            if (current.isBlank()) {
-                                                container.settingsRepository.setCustomTimezoneId("Europe/Amsterdam")
-                                            }
                                         }
                                     }
                                     showTzDialog = false
@@ -495,6 +415,18 @@ fun MapScreen(modifier: Modifier = Modifier) {
             update = { it.onResume() },
         )
 
+        if (offlineMap && !mapReady) {
+            Text(
+                "OFFLINE · MAP TILES NOT CACHED",
+                color = TerminalText,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .background(TerminalElevated, RoundedCornerShape(8.dp))
+                    .padding(16.dp),
+            )
+        }
+
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -507,83 +439,118 @@ fun MapScreen(modifier: Modifier = Modifier) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                ModeChip(precipMode) { precipMode = it; playback = MapPlaybackState.STOPPED }
+                Text(
+                    "PRECIPITATION",
+                    color = PhosphorGreen,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .background(TerminalBackground.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
                 IconButton(onClick = { locateOnMap() }) {
                     Icon(Icons.Outlined.MyLocation, contentDescription = "Locate me", tint = PhosphorGreen)
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    "TIME · ${MapTimezone.modeLabel(tzMode)} · ${MapTimezone.shortLabel(displayZone)}",
-                    color = PhosphorGreen,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    modifier = Modifier
-                        .background(TerminalBackground.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
-                        .clickable { showTzDialog = true }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                )
-            }
+            Text(
+                "TIME · ${MapTimezone.modeChipLabel(tzMode)} · ${MapTimezone.shortLabel(displayZone)}",
+                color = PhosphorGreen,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .background(TerminalBackground.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
+                    .clickable { showTzDialog = true }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
 
-            when (precipMode) {
-                MapPrecipMode.OBSERVED -> ObservedControls(
-                    session = radarSession,
-                    readyFrames = radarReady,
-                    displayedTime = displayedRadarTime,
-                    displayZone = displayZone,
-                    playback = playback,
-                    overlayOpacity = overlayOpacity,
-                    onTogglePlay = { togglePlay() },
-                    onScrub = { time, bitmap ->
-                        if (playback == MapPlaybackState.PLAYING) {
-                            playback = MapPlaybackState.USER_PAUSED
-                        }
-                        displayedRadarTime = time
-                        mapView?.getMapAsync { map ->
-                            map.style?.let { style ->
-                                radarSession?.footprint?.let { fp ->
-                                    applyOverlayBitmap(style, bitmap, fp.latNorth, fp.latSouth, fp.lonWest, fp.lonEast, overlayOpacity)
-                                }
-                            }
-                        }
-                    },
-                    onOpacity = {
-                        overlayOpacity = it
-                        vm.updateRadarOpacity(it)
-                        mapView?.getMapAsync { map ->
-                            map.style?.getLayer(RADAR_IMAGE_LAYER)?.setProperties(
-                                PropertyFactory.rasterOpacity(it),
-                            )
-                        }
-                    },
+            val frame = displayed
+            val preparing = (radarSession?.preparing == true) || (forecastSession?.preparing == true)
+            if (ready.isEmpty() && !preparing) {
+                Text(
+                    "PRECIPITATION DATA UNAVAILABLE",
+                    color = TerminalText,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.background(TerminalElevated, RoundedCornerShape(8.dp)).padding(8.dp),
                 )
-                MapPrecipMode.FORECAST -> ForecastControls(
-                    session = forecastSession,
-                    readyFrames = forecastReady,
-                    displayedTime = displayedForecastTime,
-                    displayZone = displayZone,
-                    playback = playback,
-                    overlayOpacity = overlayOpacity,
-                    precipUnit = state.units.precipitation,
-                    onTogglePlay = { togglePlay() },
-                    onScrub = { time, bitmap ->
-                        if (playback == MapPlaybackState.PLAYING) {
-                            playback = MapPlaybackState.USER_PAUSED
+            } else {
+                val prev = ready.filter { it.epochSeconds < (frame?.epochSeconds ?: 0) }.maxByOrNull { it.epochSeconds }
+                val timeLabel = frame?.let {
+                    MapTimezone.formatInstant(
+                        it.epochSeconds,
+                        displayZone,
+                        previousEpochSeconds = prev?.epochSeconds,
+                    )
+                } ?: "—"
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { togglePlay() },
+                        enabled = timeline.playable || playback == MapPlaybackState.PLAYING,
+                    ) {
+                        if (preparing && !timeline.playable) {
+                            CircularProgressIndicator(
+                                color = PhosphorGreen,
+                                modifier = Modifier.padding(8.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(
+                                if (playback == MapPlaybackState.PLAYING) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                                contentDescription = "Play/pause",
+                                tint = if (timeline.playable) PhosphorGreen else TerminalMuted,
+                            )
                         }
-                        displayedForecastTime = time
-                        mapView?.getMapAsync { map ->
-                            map.style?.let { style ->
-                                forecastSession?.footprint?.let { fp ->
-                                    applyOverlayBitmap(style, bitmap, fp.latNorth, fp.latSouth, fp.lonWest, fp.lonEast, overlayOpacity)
-                                }
+                    }
+                    Column {
+                        Text(timeLabel, color = TerminalText, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                        Text(
+                            frame?.sourceLabel ?: if (preparing) "PREPARING…" else "",
+                            color = TerminalMuted,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+
+                if (ready.isNotEmpty()) {
+                    val nowPos = timeline.nowMarkerPosition()
+                    Slider(
+                        value = scrub,
+                        onValueChange = { v ->
+                            if (playback == MapPlaybackState.PLAYING) {
+                                playback = MapPlaybackState.USER_PAUSED
                             }
-                        }
-                    },
-                    onOpacity = {
+                            scrub = v
+                            val target = timeline.frameAtScrub(v) ?: return@Slider
+                            displayed = target
+                            mapView?.getMapAsync { map ->
+                                map.style?.let { applyOverlayBitmap(it, target, overlayOpacity) }
+                            }
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = PhosphorGreen,
+                            activeTrackColor = PhosphorGreen,
+                        ),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text("PAST", color = TerminalMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        Text(
+                            "NOW",
+                            color = PhosphorGreen,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(start = ((nowPos * 100).toInt().coerceIn(0, 90)).dp),
+                        )
+                        Text("FORECAST", color = TerminalMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    }
+                }
+
+                Slider(
+                    value = overlayOpacity,
+                    onValueChange = {
                         overlayOpacity = it
                         vm.updateRadarOpacity(it)
                         mapView?.getMapAsync { map ->
@@ -592,6 +559,19 @@ fun MapScreen(modifier: Modifier = Modifier) {
                             )
                         }
                     },
+                    colors = SliderDefaults.colors(thumbColor = PhosphorGreen, activeTrackColor = PhosphorGreen),
+                )
+                Text(
+                    "Dry → Heavy  ·  ${PrecipLegend.legendTickLabels(state.units.precipitation).drop(1).take(4).joinToString(" · ")}",
+                    color = TerminalMuted,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Text(
+                    "RainViewer · Open-Meteo / DWD",
+                    color = TerminalMuted,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
                 )
             }
         }
@@ -610,194 +590,16 @@ fun MapScreen(modifier: Modifier = Modifier) {
     }
 }
 
-@Composable
-private fun ModeChip(mode: MapPrecipMode, onChange: (MapPrecipMode) -> Unit) {
-    Row(
-        modifier = Modifier
-            .background(TerminalBackground.copy(alpha = 0.9f), RoundedCornerShape(8.dp))
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        listOf(MapPrecipMode.OBSERVED to "OBSERVED", MapPrecipMode.FORECAST to "FORECAST").forEach { (m, label) ->
-            Text(
-                label,
-                color = if (m == mode) PhosphorGreen else TerminalMuted,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
-                modifier = Modifier
-                    .background(
-                        if (m == mode) TerminalElevated else TerminalBackground,
-                        RoundedCornerShape(6.dp),
-                    )
-                    .clickable { onChange(m) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun ObservedControls(
-    session: com.discount152.aeolus.map.RadarSession?,
-    readyFrames: List<com.discount152.aeolus.map.RadarFrameAsset>,
-    displayedTime: Long?,
-    displayZone: ZoneId,
-    playback: MapPlaybackState,
-    overlayOpacity: Float,
-    onTogglePlay: () -> Unit,
-    onScrub: (Long, Bitmap?) -> Unit,
-    onOpacity: (Float) -> Unit,
-) {
-    val sess = session
-    when {
-        sess == null || (sess.frames.isEmpty() && !sess.preparing) -> {
-            Text(
-                "OBSERVED RADAR UNAVAILABLE",
-                color = TerminalText,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.background(TerminalElevated, RoundedCornerShape(8.dp)).padding(8.dp),
-            )
-        }
-        else -> {
-            val displayFrame = readyFrames.find { it.time == displayedTime } ?: sess.newestReady
-            val timeLabel = displayFrame?.let {
-                MapTimezone.formatInstant(it.time, displayZone)
-            } ?: "—"
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onTogglePlay, enabled = sess.playable || playback == MapPlaybackState.PLAYING) {
-                    if (sess.preparing && !sess.playable) {
-                        CircularProgressIndicator(color = PhosphorGreen, modifier = Modifier.padding(8.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(
-                            if (playback == MapPlaybackState.PLAYING) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-                            contentDescription = "Play/pause",
-                            tint = if (sess.playable) PhosphorGreen else TerminalMuted,
-                        )
-                    }
-                }
-                Column {
-                    Text("OBSERVED RADAR", color = PhosphorGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                    Text(timeLabel, color = TerminalText, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                }
-                if (sess.preparing) {
-                    Text("  PREPARING…", color = TerminalMuted, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                }
-            }
-            if (readyFrames.isNotEmpty()) {
-                val idx = readyFrames.indexOfFirst { it.time == displayedTime }
-                    .takeIf { it >= 0 } ?: readyFrames.lastIndex
-                Slider(
-                    value = idx.toFloat(),
-                    onValueChange = { v ->
-                        val i = v.toInt().coerceIn(0, readyFrames.lastIndex)
-                        val target = readyFrames[i]
-                        onScrub(target.time, target.bitmap)
-                    },
-                    valueRange = 0f..readyFrames.lastIndex.coerceAtLeast(0).toFloat(),
-                    colors = SliderDefaults.colors(thumbColor = PhosphorGreen, activeTrackColor = PhosphorGreen),
-                )
-            }
-            Text(
-                "Ready ${readyFrames.size}/${sess.frames.count { it.status != RadarFrameStatus.FAILED }} · " +
-                    "mosaic ${sess.footprint.tilesX}×${sess.footprint.tilesY} z${sess.footprint.zoom} " +
-                    "(≤${RadarViewport.MAX_TILES_PER_FRAME} tiles/frame)",
-                color = TerminalMuted,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-            )
-            Slider(
-                value = overlayOpacity,
-                onValueChange = onOpacity,
-                colors = SliderDefaults.colors(thumbColor = PhosphorGreen, activeTrackColor = PhosphorGreen),
-            )
-            Text(
-                "Light rain → Heavy  ·  Radar © RainViewer",
-                color = TerminalMuted,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ForecastControls(
-    session: com.discount152.aeolus.map.ForecastPrecipSession?,
-    readyFrames: List<com.discount152.aeolus.map.ForecastPrecipFrame>,
-    displayedTime: Long?,
-    displayZone: ZoneId,
-    playback: MapPlaybackState,
-    overlayOpacity: Float,
-    precipUnit: com.discount152.aeolus.domain.units.PrecipitationUnit,
-    onTogglePlay: () -> Unit,
-    onScrub: (Long, Bitmap?) -> Unit,
-    onOpacity: (Float) -> Unit,
-) {
-    val sess = session
-    when {
-        sess == null || (sess.frames.isEmpty() && !sess.preparing) -> {
-            Text(
-                "FORECAST PRECIP UNAVAILABLE",
-                color = TerminalText,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.background(TerminalElevated, RoundedCornerShape(8.dp)).padding(8.dp),
-            )
-        }
-        else -> {
-            val displayFrame = readyFrames.find { it.hourEpochUtcMs == displayedTime } ?: readyFrames.firstOrNull()
-            val timeLabel = displayFrame?.let {
-                MapTimezone.formatInstant(it.hourEpochUtcMs / 1000L, displayZone)
-            } ?: "—"
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onTogglePlay, enabled = sess.playable || playback == MapPlaybackState.PLAYING) {
-                    if (sess.preparing && !sess.playable) {
-                        CircularProgressIndicator(color = PhosphorGreen, modifier = Modifier.padding(8.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(
-                            if (playback == MapPlaybackState.PLAYING) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-                            contentDescription = "Play/pause",
-                            tint = if (sess.playable) PhosphorGreen else TerminalMuted,
-                        )
-                    }
-                }
-                Column {
-                    Text("FORECAST PRECIP · MODEL", color = PhosphorGreen, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
-                    Text(timeLabel, color = TerminalText, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                }
-            }
-            if (readyFrames.isNotEmpty()) {
-                val idx = readyFrames.indexOfFirst { it.hourEpochUtcMs == displayedTime }
-                    .takeIf { it >= 0 } ?: 0
-                Slider(
-                    value = idx.toFloat(),
-                    onValueChange = { v ->
-                        val i = v.toInt().coerceIn(0, readyFrames.lastIndex)
-                        val target = readyFrames[i]
-                        onScrub(target.hourEpochUtcMs, target.bitmap)
-                    },
-                    valueRange = 0f..readyFrames.lastIndex.coerceAtLeast(0).toFloat(),
-                    colors = SliderDefaults.colors(thumbColor = PhosphorGreen, activeTrackColor = PhosphorGreen),
-                )
-            }
-            Text(
-                "Next 24h hourly · Open-Meteo best_match · not observed radar",
-                color = TerminalMuted,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-            )
-            Text(
-                "Legend: ${PrecipLegend.legendTickLabels(precipUnit).joinToString(" · ")}",
-                color = TerminalMuted,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-            )
-            Slider(
-                value = overlayOpacity,
-                onValueChange = onOpacity,
-                colors = SliderDefaults.colors(thumbColor = PhosphorGreen, activeTrackColor = PhosphorGreen),
-            )
-        }
-    }
+private fun applyOverlayBitmap(style: Style, frame: UnifiedMapFrame, opacity: Float) {
+    applyOverlayBitmap(
+        style,
+        frame.bitmap,
+        frame.latNorth,
+        frame.latSouth,
+        frame.lonWest,
+        frame.lonEast,
+        opacity,
+    )
 }
 
 private fun applyOverlayBitmap(

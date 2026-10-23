@@ -9,6 +9,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.FileOutputStream
 
 data class LastKnownGoodSnapshot(
     val schemaVersion: Int,
@@ -19,6 +20,7 @@ data class LastKnownGoodSnapshot(
 
 /**
  * Single-file boot snapshot independent of per-location [ForecastCache] keys.
+ * Atomic temp+rename with fsync so force-stop after a successful write cannot leave an empty target.
  */
 class LastKnownGoodStore(
     private val snapshotFile: File,
@@ -35,11 +37,16 @@ class LastKnownGoodStore(
         snapshotFile.parentFile?.mkdirs()
     }
 
+    fun absolutePath(): String = snapshotFile.absolutePath
+
     fun read(): LastKnownGoodSnapshot? {
         val exists = snapshotFile.isFile
         val size = if (exists) snapshotFile.length() else 0L
+        Log.i(
+            TAG,
+            "startup_read: path=${snapshotFile.absolutePath} exists=$exists size=$size",
+        )
         if (!exists) {
-            Log.d(TAG, "read: missing exists=false size=0")
             return null
         }
         return runCatching {
@@ -48,7 +55,7 @@ class LastKnownGoodStore(
             if (payload.schemaVersion != SCHEMA_VERSION) {
                 Log.w(
                     TAG,
-                    "read: unsupported schema=${payload.schemaVersion} expected=$SCHEMA_VERSION size=$size",
+                    "startup_read: unsupported schema=${payload.schemaVersion} expected=$SCHEMA_VERSION size=$size",
                 )
                 return null
             }
@@ -58,41 +65,63 @@ class LastKnownGoodStore(
                 lastSuccessfulRefreshEpochMs = payload.lastSuccessfulRefreshEpochMs,
                 bundle = payload.bundle,
             )
-            Log.d(
+            Log.i(
                 TAG,
-                "read: ok exists=true size=$size version=${payload.schemaVersion} " +
-                    "locationId=${payload.location.id} refreshedAt=${payload.lastSuccessfulRefreshEpochMs}",
+                "startup_read: decode_ok version=${payload.schemaVersion} " +
+                    "locationId=${payload.location.id} name=${payload.location.name} " +
+                    "refreshedAt=${payload.lastSuccessfulRefreshEpochMs} " +
+                    "models=${payload.bundle.models.size} daily=${payload.bundle.consensusDaily.size} " +
+                    "hourly=${payload.bundle.consensusHourly.size} " +
+                    "ensemble=${payload.bundle.ensemble != null}",
             )
             snap
         }.onFailure { e ->
-            Log.e(TAG, "read: failed exists=true size=$size", e)
+            Log.e(TAG, "startup_read: decode_failed exists=true size=$size", e)
         }.getOrNull()
     }
 
     fun write(bundle: WeatherBundle): Boolean {
         snapshotFile.parentFile?.mkdirs()
+        Log.i(
+            TAG,
+            "write_attempt: path=${snapshotFile.absolutePath} schema=$SCHEMA_VERSION " +
+                "locationId=${bundle.location.id} name=${bundle.location.name} " +
+                "fetchedAt=${bundle.fetchedAtEpochMs}",
+        )
         val payload = LastKnownGoodPayload(
             schemaVersion = SCHEMA_VERSION,
             location = bundle.location,
             lastSuccessfulRefreshEpochMs = bundle.fetchedAtEpochMs,
             bundle = bundle,
         )
-        val text = json.encodeToString(payload)
+        val bytes = try {
+            json.encodeToString(payload).encodeToByteArray()
+        } catch (e: Exception) {
+            Log.e(TAG, "write: serialize_failed locationId=${bundle.location.id}", e)
+            return false
+        }
         val temp = File(snapshotFile.parentFile, "${snapshotFile.name}.tmp")
         return try {
-            temp.writeText(text)
+            FileOutputStream(temp).use { fos ->
+                fos.write(bytes)
+                fos.fd.sync()
+            }
+            if (snapshotFile.exists()) snapshotFile.delete()
             if (!temp.renameTo(snapshotFile)) {
                 temp.copyTo(snapshotFile, overwrite = true)
                 temp.delete()
+                FileOutputStream(snapshotFile, true).use { it.fd.sync() }
             }
-            Log.d(
+            val finalSize = snapshotFile.length()
+            Log.i(
                 TAG,
-                "write: success locationId=${bundle.location.id} version=$SCHEMA_VERSION bytes=${text.length}",
+                "write_success: bytes=${bytes.size} finalSize=$finalSize " +
+                    "locationId=${bundle.location.id} version=$SCHEMA_VERSION",
             )
             true
         } catch (e: Exception) {
             if (temp.exists()) temp.delete()
-            Log.e(TAG, "write: failed locationId=${bundle.location.id}", e)
+            Log.e(TAG, "write_failed: locationId=${bundle.location.id}", e)
             false
         }
     }
@@ -100,7 +129,7 @@ class LastKnownGoodStore(
     fun clear() {
         val existed = snapshotFile.isFile
         val deleted = if (existed) snapshotFile.delete() else true
-        Log.d(TAG, "clear: existed=$existed deleted=$deleted existsNow=${snapshotFile.isFile}")
+        Log.i(TAG, "clear: existed=$existed deleted=$deleted existsNow=${snapshotFile.isFile}")
     }
 
     @Serializable

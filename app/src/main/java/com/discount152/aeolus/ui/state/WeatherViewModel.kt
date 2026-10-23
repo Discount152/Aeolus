@@ -135,8 +135,18 @@ class WeatherViewModel(
     }
 
     private suspend fun bootstrap() {
+        android.util.Log.i(
+            com.discount152.aeolus.data.cache.LastKnownGoodStore.TAG,
+            "bootstrap: begin path=${container.lastKnownGoodStore.absolutePath()}",
+        )
         val bootFromLkg = startup.bootFromLastKnownGood()
         if (bootFromLkg != null) {
+            android.util.Log.i(
+                com.discount152.aeolus.data.cache.LastKnownGoodStore.TAG,
+                "bootstrap: lkg_hydrated locationId=${bootFromLkg.location.id} " +
+                    "bundleDaily=${bootFromLkg.bundle?.consensusDaily?.size} " +
+                    "weatherFlow=${container.weatherRepository.weather.value != null}",
+            )
             _meta.update {
                 it.copy(
                     location = bootFromLkg.location,
@@ -144,12 +154,22 @@ class WeatherViewModel(
                     error = null,
                 )
             }
+        } else {
+            android.util.Log.w(
+                com.discount152.aeolus.data.cache.LastKnownGoodStore.TAG,
+                "bootstrap: lkg_missing_or_decode_failed",
+            )
         }
 
         val permissionGranted = container.locationService.hasPermission()
         val (location, needsPermission) = startup.resolveInitialLocation(
             permissionGranted = permissionGranted,
             allowPermissionPrompt = !permissionResolved,
+        )
+        android.util.Log.i(
+            com.discount152.aeolus.data.cache.LastKnownGoodStore.TAG,
+            "bootstrap: resolved locationId=${location.id} needsPermission=$needsPermission " +
+                "hadLkg=${bootFromLkg != null}",
         )
 
         if (needsPermission) {
@@ -175,7 +195,10 @@ class WeatherViewModel(
             return
         }
 
-        applyActiveLocation(location, persistActive = true, saveToList = false, forceNetwork = true)
+        // Prefer LKG-embedded location when process restarts offline — avoid replacing with
+        // a GPS fix that has no per-location cache and would appear blank after failed refresh.
+        val active = if (bootFromLkg != null) bootFromLkg.location else location
+        applyActiveLocation(active, persistActive = true, saveToList = false, forceNetwork = true)
     }
 
     /** Called from UI after the system permission dialog resolves. */

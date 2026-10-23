@@ -70,8 +70,8 @@ data class PrecipSamplePoint(val lat: Double, val lon: Double)
 /**
  * Builds georeferenced hourly forecast precipitation rasters for a padded map viewport.
  *
- * Data source: Open-Meteo forecast API with **Open-Meteo best_match** ([OpenMeteoForecastApi.forecastMultiLocation]).
- * One batched request per viewport refresh; 24 hourly frames interpolated locally from the sample grid.
+ * Data source: Open-Meteo forecast with coherent **ICON Seamless** (`icon_seamless`) across the viewport.
+ * Adaptive sample grid; batched multi-location requests; 24 hourly frames generated locally.
  */
 fun interface ForecastPrecipRasterEncoder {
     fun encode(widthPx: Int, heightPx: Int, pixels: IntArray): Bitmap
@@ -79,8 +79,7 @@ fun interface ForecastPrecipRasterEncoder {
 
 class ForecastPrecipPipeline(
     private val forecastApi: OpenMeteoForecastApi,
-    private val gridCols: Int = DEFAULT_GRID_COLS,
-    private val gridRows: Int = DEFAULT_GRID_ROWS,
+    private val modelId: String = MAP_FORECAST_MODEL,
     private val nowUtc: () -> Instant = { Instant.now().truncatedTo(ChronoUnit.HOURS) },
     private val rasterEncoder: ForecastPrecipRasterEncoder = ForecastPrecipRasterEncoder { w, h, pixels ->
         Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { bmp ->
@@ -88,6 +87,10 @@ class ForecastPrecipPipeline(
         }
     },
 ) {
+    /** Network multi-location calls for the last load (tests / diagnostics). */
+    @Volatile
+    var networkBatchCount: Int = 0
+        private set
     private val mutex = Mutex()
     private val frameCache = LinkedHashMap<String, Bitmap>(48, 0.75f, true)
     private val maxCacheEntries = 64
@@ -123,6 +126,12 @@ class ForecastPrecipPipeline(
             }
         }
 
+        val (gridCols, gridRows) = ForecastPrecipSampling.adaptiveGridSize(
+            footprint.latSouth,
+            footprint.latNorth,
+            footprint.lonWest,
+            footprint.lonEast,
+        )
         val samples = ForecastPrecipSampling.sampleGrid(
             footprint.latSouth,
             footprint.latNorth,
@@ -136,15 +145,10 @@ class ForecastPrecipPipeline(
             return
         }
 
-        val latParam = samples.joinToString(",") { "%.5f".format(it.lat) }
-        val lonParam = samples.joinToString(",") { "%.5f".format(it.lon) }
-
+        networkBatchCount = 0
         val responses = try {
             withContext(Dispatchers.IO) {
-                forecastApi.forecastMultiLocation(
-                    latitude = latParam,
-                    longitude = lonParam,
-                )
+                fetchBatched(samples)
             }
         } catch (_: Exception) {
             _session.value = ForecastPrecipSession(footprint, emptyList(), preparing = false)
@@ -226,6 +230,26 @@ class ForecastPrecipPipeline(
         _session.value = null
     }
 
+    private suspend fun fetchBatched(samples: List<PrecipSamplePoint>): List<OpenMeteoForecastResponse> {
+        val out = ArrayList<OpenMeteoForecastResponse>(samples.size)
+        var i = 0
+        while (i < samples.size) {
+            val end = (i + MAX_POINTS_PER_BATCH).coerceAtMost(samples.size)
+            val chunk = samples.subList(i, end)
+            val latParam = chunk.joinToString(",") { "%.5f".format(it.lat) }
+            val lonParam = chunk.joinToString(",") { "%.5f".format(it.lon) }
+            val batch = forecastApi.forecastMultiLocation(
+                latitude = latParam,
+                longitude = lonParam,
+                models = modelId,
+            )
+            networkBatchCount++
+            out.addAll(batch)
+            i = end
+        }
+        return out
+    }
+
     private fun buildSampleGridValues(responses: List<OpenMeteoForecastResponse>): List<DoubleArray> =
         responses.map { resp ->
             resp.hourly?.precipitation?.map { it ?: 0.0 }?.toDoubleArray() ?: doubleArrayOf()
@@ -252,13 +276,48 @@ class ForecastPrecipPipeline(
     }
 
     companion object {
-        const val DEFAULT_GRID_COLS = 12
-        const val DEFAULT_GRID_ROWS = 8
-        const val DEFAULT_RASTER_SIZE_PX = 256
+        /** DWD ICON Seamless — one coherent model for the whole map viewport. */
+        const val MAP_FORECAST_MODEL = "icon_seamless"
+        const val FALLBACK_FORECAST_MODEL = "ecmwf_ifs025"
+        const val DEFAULT_GRID_COLS = 18
+        const val DEFAULT_GRID_ROWS = 12
+        const val DEFAULT_RASTER_SIZE_PX = 512
+        const val MAX_SAMPLE_POINTS = 384
+        const val MAX_POINTS_PER_BATCH = 80
     }
 }
 
 object ForecastPrecipSampling {
+    /**
+     * Adaptive cols×rows from geographic span. Wider views → ~18×12; closer → denser up to ~24×16,
+     * capped at [ForecastPrecipPipeline.MAX_SAMPLE_POINTS].
+     */
+    fun adaptiveGridSize(
+        latSouth: Double,
+        latNorth: Double,
+        lonWest: Double,
+        lonEast: Double,
+    ): Pair<Int, Int> {
+        var west = lonWest
+        var east = lonEast
+        if (east < west) east += 360.0
+        val latSpan = (latNorth - latSouth).coerceAtLeast(0.01)
+        val lonSpan = (east - west).coerceAtLeast(0.01)
+        val maxSpan = maxOf(latSpan, lonSpan)
+        val (cols, rows) = when {
+            maxSpan > 25.0 -> 18 to 12
+            maxSpan > 10.0 -> 20 to 14
+            maxSpan > 4.0 -> 22 to 15
+            else -> 24 to 16
+        }
+        var c = cols
+        var r = rows
+        while (c * r > ForecastPrecipPipeline.MAX_SAMPLE_POINTS && (c > 8 || r > 6)) {
+            if (c >= r && c > 8) c-- else if (r > 6) r-- else break
+        }
+        return c to r
+    }
+
     fun sampleGrid(
         latSouth: Double,
         latNorth: Double,
@@ -356,18 +415,15 @@ object ForecastPrecipRaster {
 
                 fun rateAt(c: Int, r: Int): Double = ratesMmPerHour[r * cols + c]
 
-                val c00 = PrecipLegend.colorForRateMmPerHour(rateAt(x0, y0))
-                val c10 = PrecipLegend.colorForRateMmPerHour(rateAt(x1, y0))
-                val c01 = PrecipLegend.colorForRateMmPerHour(rateAt(x0, y1))
-                val c11 = PrecipLegend.colorForRateMmPerHour(rateAt(x1, y1))
-                val blended = if (PrecipArgb.alpha(c00) == 0 && PrecipArgb.alpha(c10) == 0 &&
-                    PrecipArgb.alpha(c01) == 0 && PrecipArgb.alpha(c11) == 0
-                ) {
-                    PrecipArgb.TRANSPARENT
-                } else {
-                    PrecipLegend.blendColors(c00, c10, c01, c11, tx, ty)
-                }
-                pixels[py * widthPx + px] = blended
+                // Interpolate rates then dry-mask — avoids rain-colored halos into dry cells
+                val r00 = rateAt(x0, y0)
+                val r10 = rateAt(x1, y0)
+                val r01 = rateAt(x0, y1)
+                val r11 = rateAt(x1, y1)
+                val top = r00 * (1 - tx) + r10 * tx
+                val bottom = r01 * (1 - tx) + r11 * tx
+                val rate = top * (1 - ty) + bottom * ty
+                pixels[py * widthPx + px] = PrecipLegend.colorForRateMmPerHour(rate)
             }
         }
 

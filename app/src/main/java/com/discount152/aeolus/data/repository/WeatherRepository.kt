@@ -122,10 +122,20 @@ class WeatherRepository(
                 val fresh = fetchLive(stable).copy(location = stable)
                 cache.write(key, fresh)
                 snapshots.record(key, fresh)
-                lastKnownGoodStore.write(fresh)
+                val lkgOk = lastKnownGoodStore.write(fresh)
+                android.util.Log.i(
+                    LastKnownGoodStore.TAG,
+                    "live_refresh: wrote_lkg=$lkgOk locationId=${stable.id} key=$key " +
+                        "daily=${fresh.consensusDaily.size} hourly=${fresh.consensusHourly.size}",
+                )
                 _weather.value = fresh
                 fresh
             } catch (e: Exception) {
+                android.util.Log.w(
+                    LastKnownGoodStore.TAG,
+                    "live_refresh_failed: locationId=${stable.id} key=$key " +
+                        "priorWeather=${_weather.value != null} err=${e.message}",
+                )
                 val cached = (cache.read(key) ?: cache.findNearest(stable))?.let { enrichSkySummaries(it) }
                     ?.copy(fromCache = true, stale = true)
                 if (cached != null) {
@@ -133,7 +143,13 @@ class WeatherRepository(
                     _weather.value = cached
                     cached
                 } else if (_weather.value != null) {
-                    enrichSkySummaries(_weather.value!!).copy(fromCache = true, stale = true)
+                    val kept = enrichSkySummaries(_weather.value!!).copy(fromCache = true, stale = true)
+                    _weather.value = kept
+                    android.util.Log.i(
+                        LastKnownGoodStore.TAG,
+                        "live_refresh_failed: retained_existing_bundle locationId=${kept.location.id}",
+                    )
+                    kept
                 } else {
                     throw e
                 }

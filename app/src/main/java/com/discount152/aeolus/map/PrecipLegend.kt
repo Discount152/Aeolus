@@ -5,27 +5,32 @@ import com.discount152.aeolus.domain.units.UnitConverter
 import kotlin.math.roundToInt
 
 /**
- * Precipitation intensity scale for forecast map overlays (mm/h internally).
+ * Precipitation intensity scale for map overlays (mm/h).
+ * Dry areas stay fully transparent; palette is blue/cyan rainfall-like (no aurora greens).
+ *
+ * Bands: Dry &lt;0.1 · Very light 0.1–0.5 · Light 0.5–1 · Moderate 1–2.5 ·
+ * Heavy 2.5–5 · Very heavy 5–10 · Extreme &gt;10
  */
 object PrecipLegend {
-    const val RATE_TRANSPARENT_MAX_MM_H = 0.05
+    /** Explicit dry mask — below this after interpolation → transparent. */
+    const val DRY_THRESHOLD_MM_H = 0.1
+    const val RATE_TRANSPARENT_MAX_MM_H = DRY_THRESHOLD_MM_H
 
     data class Threshold(val minMmPerHour: Double, val argb: Int, val labelKey: String)
 
     val thresholds: List<Threshold> = listOf(
-        Threshold(0.0, PrecipArgb.TRANSPARENT, "none"),
-        Threshold(0.1, PrecipArgb.argb(140, 180, 220, 255), "light"),
-        Threshold(0.5, PrecipArgb.argb(165, 120, 200, 240), "light_moderate"),
-        Threshold(1.0, PrecipArgb.argb(180, 80, 170, 210), "moderate"),
-        Threshold(2.5, PrecipArgb.argb(195, 60, 180, 140), "moderate_heavy"),
-        Threshold(5.0, PrecipArgb.argb(210, 40, 150, 100), "heavy"),
-        Threshold(10.0, PrecipArgb.argb(225, 20, 110, 80), "very_heavy"),
+        Threshold(0.0, PrecipArgb.TRANSPARENT, "dry"),
+        Threshold(0.1, PrecipArgb.argb(150, 120, 190, 255), "very_light"),
+        Threshold(0.5, PrecipArgb.argb(170, 70, 150, 245), "light"),
+        Threshold(1.0, PrecipArgb.argb(190, 40, 110, 230), "moderate"),
+        Threshold(2.5, PrecipArgb.argb(205, 25, 70, 210), "heavy"),
+        Threshold(5.0, PrecipArgb.argb(220, 20, 40, 170), "very_heavy"),
+        Threshold(10.0, PrecipArgb.argb(235, 15, 20, 120), "extreme"),
     )
 
-    /** Map precipitation rate (mm/h) to ARGB; transparent below [RATE_TRANSPARENT_MAX_MM_H]. */
     fun colorForRateMmPerHour(mmPerHour: Double): Int {
-        if (mmPerHour < RATE_TRANSPARENT_MAX_MM_H) return PrecipArgb.TRANSPARENT
-        var chosen = thresholds.first()
+        if (mmPerHour < DRY_THRESHOLD_MM_H) return PrecipArgb.TRANSPARENT
+        var chosen = thresholds.first { it.minMmPerHour > 0 }
         for (t in thresholds) {
             if (mmPerHour >= t.minMmPerHour) chosen = t
         }
@@ -47,36 +52,33 @@ object PrecipLegend {
 
     fun legendTickLabels(unit: PrecipitationUnit): List<String> =
         legendTickRatesMmPerHour().map { rate ->
-            if (rate <= 0.0) "0" else formatRateLabel(rate, unit)
+            when {
+                rate <= 0.0 -> "Dry"
+                else -> formatRateLabel(rate, unit)
+            }
         }
 
     fun blendColors(c1: Int, c2: Int, c3: Int, c4: Int, tx: Double, ty: Double): Int {
         val top = lerpArgb(c1, c2, tx)
         val bottom = lerpArgb(c3, c4, tx)
-        return lerpArgb(top, bottom, ty)
+        val blended = lerpArgb(top, bottom, ty)
+        // Re-apply dry mask: near-transparent blends stay fully transparent
+        if (PrecipArgb.alpha(blended) < 20) return PrecipArgb.TRANSPARENT
+        return blended
     }
 
     private fun lerpArgb(a: Int, b: Int, t: Double): Int {
         val ta = t.coerceIn(0.0, 1.0)
         val inv = 1.0 - ta
-        val aA = PrecipArgb.alpha(a)
-        val aR = PrecipArgb.red(a)
-        val aG = PrecipArgb.green(a)
-        val aB = PrecipArgb.blue(a)
-        val bA = PrecipArgb.alpha(b)
-        val bR = PrecipArgb.red(b)
-        val bG = PrecipArgb.green(b)
-        val bB = PrecipArgb.blue(b)
         return PrecipArgb.argb(
-            (aA * inv + bA * ta).roundToInt(),
-            (aR * inv + bR * ta).roundToInt(),
-            (aG * inv + bG * ta).roundToInt(),
-            (aB * inv + bB * ta).roundToInt(),
+            (PrecipArgb.alpha(a) * inv + PrecipArgb.alpha(b) * ta).roundToInt(),
+            (PrecipArgb.red(a) * inv + PrecipArgb.red(b) * ta).roundToInt(),
+            (PrecipArgb.green(a) * inv + PrecipArgb.green(b) * ta).roundToInt(),
+            (PrecipArgb.blue(a) * inv + PrecipArgb.blue(b) * ta).roundToInt(),
         )
     }
 }
 
-/** ARGB helpers usable on JVM unit tests without Robolectric. */
 internal object PrecipArgb {
     const val TRANSPARENT: Int = 0
 

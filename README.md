@@ -7,13 +7,13 @@ Aeolus is a confidence-first Android weather application that combines determini
 - **TODAY** — current conditions, Consensus Confidence, 48-hour hourly strip, daily outlook
 - **FORECAST** — 15-day expandable daily cards with model coverage notes
 - **MODELS** — ECMWF / ICON / GFS comparison, outliers, ECMWF ensemble summary, stability signals
-- **MAP** — MapLibre + OpenFreeMap basemap; OBSERVED RainViewer mosaic radar; FORECAST Open-Meteo precip (24h); selectable map timezones
+- **MAP** — Unified precipitation timeline (RainViewer past → NOW → ICON Seamless forecast); selectable map timezones with local wall-clock labels
 
 ## Requirements
 
 - Android 15 (API 35)+
 - Application ID: `com.discount152.aeolus`
-- Version: 1.0.5 (versionCode 6)
+- Version: 1.0.6 (versionCode 7)
 
 ## Build
 
@@ -24,7 +24,7 @@ $env:ANDROID_HOME = "D:\Android\Sdk"
 
 Signed release APK (after local keystore setup):
 
-`dist/Aeolus-v1.0.5.apk` (prior v1.0.0–v1.0.4 APKs retained alongside)
+`dist/Aeolus-v1.0.6.apk` (prior v1.0.0–v1.0.5 APKs retained alongside)
 
 ## Privacy
 

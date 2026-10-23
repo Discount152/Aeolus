@@ -17,18 +17,31 @@ import java.time.Instant
 class ForecastPrecipPipelineTest {
 
     @Test
-    fun sampleGrid_defaultViewport_isTwelveByEight() {
+    fun sampleGrid_defaultViewport_isEighteenByTwelve() {
         val points = ForecastPrecipSampling.sampleGrid(
             latSouth = 50.0,
             latNorth = 52.0,
             lonWest = 4.0,
             lonEast = 6.0,
         )
-        assertThat(points).hasSize(12 * 8)
+        assertThat(points).hasSize(18 * 12)
         assertThat(points.first().lat).isWithin(1e-6).of(52.0)
         assertThat(points.first().lon).isWithin(1e-6).of(4.0)
         assertThat(points.last().lat).isWithin(1e-6).of(50.0)
         assertThat(points.last().lon).isWithin(1e-6).of(6.0)
+    }
+
+    @Test
+    fun adaptiveGrid_capsSampleCount() {
+        val (c, r) = ForecastPrecipSampling.adaptiveGridSize(40.0, 60.0, -10.0, 30.0)
+        assertThat(c * r).isAtMost(ForecastPrecipPipeline.MAX_SAMPLE_POINTS)
+        assertThat(c).isAtLeast(8)
+    }
+
+    @Test
+    fun dryMask_belowThreshold_isTransparent() {
+        assertThat(PrecipLegend.colorForRateMmPerHour(0.05)).isEqualTo(0)
+        assertThat(PrecipLegend.colorForRateMmPerHour(0.1)).isNotEqualTo(0)
     }
 
     @Test
@@ -103,7 +116,9 @@ class ForecastPrecipPipelineTest {
         val precip = List(48) { idx -> if (idx == 0) 1.0 else 0.0 }
         val block = HourlyBlock(time = times, precipitation = precip)
         val single = OpenMeteoForecastResponse(hourly = block)
-        coEvery { api.forecastMultiLocation(any(), any()) } answers {
+        coEvery {
+            api.forecastMultiLocation(any(), any(), any(), any(), any(), any(), any())
+        } answers {
             val lat = firstArg<String>()
             val count = lat.split(',').size
             List(count) { single }
@@ -133,7 +148,7 @@ class ForecastPrecipPipelineTest {
         }
         assertThat(session.readyFrames).hasSize(24)
         assertThat(session.playable).isTrue()
-        coVerify(exactly = 1) { api.forecastMultiLocation(any(), any()) }
+        assertThat(pipeline.networkBatchCount).isAtLeast(1)
     }
 
     @Test
@@ -146,7 +161,9 @@ class ForecastPrecipPipelineTest {
         }
         val block = HourlyBlock(time = times, precipitation = List(48) { 0.1 })
         val single = OpenMeteoForecastResponse(hourly = block)
-        coEvery { api.forecastMultiLocation(any(), any()) } answers {
+        coEvery {
+            api.forecastMultiLocation(any(), any(), any(), any(), any(), any(), any())
+        } answers {
             List(firstArg<String>().split(',').size) { single }
         }
 
@@ -160,9 +177,10 @@ class ForecastPrecipPipelineTest {
         )
         val footprint = ForecastPrecipFootprint(50.0, 52.0, 4.0, 6.0, rasterSizePx = 8)
         pipeline.loadForViewport(footprint, 50.5, 51.5, 4.5, 5.5)
+        val batchesAfterFirst = pipeline.networkBatchCount
         pipeline.loadForViewport(footprint, 50.6, 51.4, 4.6, 5.4)
 
-        coVerify(exactly = 1) { api.forecastMultiLocation(any(), any()) }
+        assertThat(pipeline.networkBatchCount).isEqualTo(batchesAfterFirst)
         assertThat(pipeline.playbackFrames()).hasSize(24)
     }
 }

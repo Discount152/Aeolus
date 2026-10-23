@@ -34,11 +34,11 @@ Aeolus downloads 512 px XYZ tiles (`{path}/512/{z}/{x}/{y}/2/1_1.png`, max zoom 
 stitches a complete mosaic (≤ ~4 tiles/frame), and shows it via MapLibre ImageSource.
 MapLibre does not fetch animated radar tiles.
 
-## Forecast precipitation (Forecast map mode)
+## Forecast precipitation (unified map future segment)
 
-Open-Meteo `/v1/forecast` with `models=best_match`, batched multi-coordinate request
-for a ~12×8 viewport sample grid, hourly precipitation for the next 24 hours.
-Local raster interpolation — not labeled as radar.
+Open-Meteo `/v1/forecast` with coherent `models=icon_seamless` (DWD ICON Seamless)
+across the viewport, adaptive batched multi-coordinate sampling, hourly precipitation
+for the next 24 hours. Local rate interpolation + dry mask — labeled as forecast, not radar.
 
 ## Map basemap
 

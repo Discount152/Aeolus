@@ -104,6 +104,14 @@ class WeatherRepository(
         )
     }
 
+    /** Drop in-memory weather when it does not belong to [location]. */
+    fun clearIfNotMatching(location: GeoLocation) {
+        val current = _weather.value ?: return
+        if (LocationIdentity.stableId(current.location) != LocationIdentity.stableId(location)) {
+            _weather.value = null
+        }
+    }
+
     suspend fun getWeather(location: GeoLocation, forceRefresh: Boolean = false): WeatherBundle =
         mutex.withLock {
             val stable = LocationIdentity.withStableId(location)

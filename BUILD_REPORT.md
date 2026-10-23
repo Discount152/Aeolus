@@ -54,4 +54,4 @@ No emulator/adb on Aeolus-PC this run. Manual device QA recommended for mosaic s
 ## Artifact
 
 - `D:\Project Aeolus\dist\Aeolus-v1.0.5.apk`
-- SHA-256: `ef19488e922aecfc3e4fd32438093eef852ede09874984cc928c3701de078017`
+- SHA-256: `2afdfb434c46581dc05aa49350530796f139c23511f263c1fefca452d3258cfc`

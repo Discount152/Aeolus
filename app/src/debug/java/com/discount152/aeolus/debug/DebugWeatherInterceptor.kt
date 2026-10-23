@@ -6,16 +6,22 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import java.io.IOException
 import java.net.SocketTimeoutException
 
 class DebugWeatherInterceptor(
     private val scenarioProvider: () -> DebugWeatherScenario = { DebugWeatherHarness.scenario },
     private val sleeper: (Long) -> Unit = { ms -> if (ms > 0) Thread.sleep(ms) },
+    private val networkValidated: () -> Boolean = { DebugWeatherHarness.isNetworkValidated() },
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         if (!request.url.host.contains("open-meteo.com")) {
             return chain.proceed(request)
+        }
+        if (!networkValidated()) {
+            Log.i(DebugWeatherHarness.TAG, "nic_unvalidated — not synthesizing ${scenarioProvider()}")
+            throw IOException(NO_VALIDATED_NETWORK)
         }
         val scenario = scenarioProvider()
         if (scenario == DebugWeatherScenario.LIVE) {
@@ -107,5 +113,6 @@ class DebugWeatherInterceptor(
         private val JSON = "application/json".toMediaType()
         private const val ICON = "icon_seamless"
         private const val ECMWF = "ecmwf_ifs025"
+        const val NO_VALIDATED_NETWORK = "No validated network"
     }
 }

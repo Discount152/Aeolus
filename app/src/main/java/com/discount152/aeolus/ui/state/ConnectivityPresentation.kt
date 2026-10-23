@@ -36,13 +36,19 @@ fun computeConnectivityPresentation(
     bundle: WeatherBundle?,
     networkValidated: Boolean,
 ): ConnectivityPresentation {
+    // Real NIC wins over harness-fresh bundles and mid-refresh "UPDATING" (D7).
+    if (!networkValidated) {
+        return if (bundle == null) {
+            ConnectivityPresentation.OFFLINE_NO_CACHE
+        } else {
+            ConnectivityPresentation.OFFLINE_WITH_CACHE
+        }
+    }
     if (bundle == null) {
-        if (!networkValidated) return ConnectivityPresentation.OFFLINE_NO_CACHE
         if (loading && error == null) return ConnectivityPresentation.LIVE
         return ConnectivityPresentation.ONLINE_ERROR_NO_CACHE
     }
     if (refreshing) return ConnectivityPresentation.REFRESHING_WITH_CACHE
-    if (!networkValidated) return ConnectivityPresentation.OFFLINE_WITH_CACHE
     if (error != null || bundle.stale) return ConnectivityPresentation.STALE_WITH_CACHE
     return ConnectivityPresentation.LIVE
 }

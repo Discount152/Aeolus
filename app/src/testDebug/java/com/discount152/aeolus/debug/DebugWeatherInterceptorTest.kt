@@ -25,7 +25,7 @@ class DebugWeatherInterceptorTest {
     fun live_passthroughCallsNextHop() {
         val reached = AtomicBoolean(false)
         val client = OkHttpClient.Builder()
-            .addInterceptor(DebugWeatherInterceptor { DebugWeatherScenario.LIVE })
+            .addInterceptor(DebugWeatherInterceptor(scenarioProvider = { DebugWeatherScenario.LIVE }))
             .addInterceptor {
                 reached.set(true)
                 throw IOException("network reached")
@@ -37,6 +37,26 @@ class DebugWeatherInterceptorTest {
         assertThat(reached.get()).isTrue()
         assertThat(thrown).isInstanceOf(IOException::class.java)
         assertThat(thrown!!.message).isEqualTo("network reached")
+    }
+
+    @Test
+    fun unvalidatedNic_doesNotSynthesizeSuccessFull() {
+        DebugWeatherHarness.scenario = DebugWeatherScenario.SUCCESS_FULL
+        DebugWeatherHarness.networkValidatedProvider = { false }
+        val reached = AtomicBoolean(false)
+        val client = OkHttpClient.Builder()
+            .addInterceptor(DebugWeatherHarness.interceptor)
+            .addInterceptor {
+                reached.set(true)
+                throw IOException("live om reached")
+            }
+            .build()
+        val thrown = runCatching {
+            client.newCall(forecastRequest("icon_seamless")).execute()
+        }.exceptionOrNull()
+        assertThat(reached.get()).isFalse()
+        assertThat(thrown).isInstanceOf(IOException::class.java)
+        assertThat(thrown!!.message).isEqualTo(DebugWeatherInterceptor.NO_VALIDATED_NETWORK)
     }
 
     @Test

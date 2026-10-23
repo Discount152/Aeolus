@@ -89,18 +89,20 @@ class WeatherViewModel(
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            _networkValidated.value = NetworkStatus.isValidated(getApplication())
+            resampleNetwork()
         }
 
         override fun onLost(network: Network) {
-            _networkValidated.value = NetworkStatus.isValidated(getApplication())
+            resampleNetwork()
         }
 
         override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-            _networkValidated.value =
-                networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            resampleNetwork()
         }
+    }
+
+    private fun resampleNetwork() {
+        _networkValidated.value = NetworkStatus.isValidated(getApplication())
     }
 
     val state: StateFlow<WeatherUiState> = combine(
@@ -475,6 +477,7 @@ class WeatherViewModel(
     ) {
         val location = _meta.value.location ?: return
         if (locationGen != activeLocationGeneration) return
+        resampleNetwork()
 
         val sameLocBundle = container.weatherRepository.weather.value?.takeIf {
             LocationIdentity.stableId(it.location) == LocationIdentity.stableId(location)

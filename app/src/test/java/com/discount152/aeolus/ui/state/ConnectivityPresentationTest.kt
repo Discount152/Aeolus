@@ -97,6 +97,34 @@ class ConnectivityPresentationTest {
     }
 
     @Test
+    fun freshHarnessBundle_unvalidatedNic_isOfflineNotLive() {
+        val live = bundle.copy(fromCache = false, stale = false)
+        val presentation = computeConnectivityPresentation(
+            loading = false,
+            refreshing = false,
+            error = null,
+            bundle = live,
+            networkValidated = false,
+        )
+        assertThat(presentation).isEqualTo(ConnectivityPresentation.OFFLINE_WITH_CACHE)
+        assertThat(presentation).isNotEqualTo(ConnectivityPresentation.LIVE)
+        assertThat(presentation).isNotEqualTo(ConnectivityPresentation.STALE_WITH_CACHE)
+    }
+
+    @Test
+    fun refreshing_unvalidatedNic_isOfflineNotUpdating() {
+        val presentation = computeConnectivityPresentation(
+            loading = false,
+            refreshing = true,
+            error = null,
+            bundle = bundle,
+            networkValidated = false,
+        )
+        assertThat(presentation).isEqualTo(ConnectivityPresentation.OFFLINE_WITH_CACHE)
+        assertThat(presentation).isNotEqualTo(ConnectivityPresentation.REFRESHING_WITH_CACHE)
+    }
+
+    @Test
     fun http429StyleError_neverMapsToOfflineWhenValidated() {
         val presentation = computeConnectivityPresentation(
             loading = false,

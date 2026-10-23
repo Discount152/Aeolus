@@ -2,6 +2,7 @@ package com.discount152.aeolus.debug
 
 import android.content.Context
 import android.util.Log
+import com.discount152.aeolus.data.network.NetworkStatus
 import okhttp3.Interceptor
 
 /**
@@ -26,12 +27,28 @@ object DebugWeatherHarness {
     @Volatile
     var retryAfterSeconds: Long = 1L
 
+    /**
+     * Real NIC / validated-network probe. Tests default to online.
+     * Device debug attaches [com.discount152.aeolus.data.network.NetworkStatus].
+     * Unvalidated NIC must not be papered over by SUCCESS_* fixtures (D7).
+     */
+    @Volatile
+    var networkValidatedProvider: () -> Boolean = { true }
+
     val interceptor: Interceptor = DebugWeatherInterceptor()
+
+    fun isNetworkValidated(): Boolean = networkValidatedProvider()
 
     fun reset() {
         scenario = DebugWeatherScenario.LIVE
         slowDelayMs = 2_500L
         retryAfterSeconds = 1L
+        networkValidatedProvider = { true }
+    }
+
+    fun attachNetworkStatus(context: Context) {
+        val app = context.applicationContext
+        networkValidatedProvider = { NetworkStatus.isValidated(app) }
     }
 
     fun setScenario(value: DebugWeatherScenario, context: Context? = null) {
@@ -50,6 +67,7 @@ object DebugWeatherHarness {
     }
 
     fun restore(context: Context) {
+        attachNetworkStatus(context)
         val stored = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(PREF_SCENARIO, null)
         DebugWeatherScenario.parse(stored)?.let { scenario = it }
